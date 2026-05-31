@@ -18,6 +18,7 @@
   let audio = null;
   let activeId = null; // intercom_id, для которого сейчас открыт поп-ап
   let micOn = false;
+  let micStream = null; // активный поток микрофона оператора (если разрешён)
   let lastSig = null;  // подпись текущего состояния, чтобы не перерисовывать зря
 
   function getHass() {
@@ -50,7 +51,7 @@
           background: rgba(8,10,16,.92); display: none; align-items: center;
           justify-content: center; font-family: var(--paper-font-body1_-_font-family, sans-serif); }
         #bms-intercom-overlay.show { display: flex; }
-        .bms-card { width: min(92vw, 720px); background: #161a24; border-radius: 18px;
+        .bms-card { position: relative; width: min(92vw, 720px); background: #161a24; border-radius: 18px;
           overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
         .bms-head { display: flex; align-items: center; justify-content: space-between;
           padding: 14px 20px; color: #e6ebf2; font-size: 20px; font-weight: 600; }
@@ -73,6 +74,11 @@
         .bms-mic    { background: #46506b; }
         .bms-mic.on { background: #c9a227; }
         .bms-hidden { display: none !important; }
+        .bms-toast { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+          max-width: 88%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660;
+          border-radius: 12px; padding: 10px 16px; font-size: 14px; line-height: 1.35; text-align: center;
+          box-shadow: 0 8px 24px rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .2s; }
+        .bms-toast.show { opacity: 1; }
       </style>
       <div class="bms-card">
         <div class="bms-head">
@@ -117,13 +123,49 @@
     if (entity) hass.callService("button", "press", { entity_id: entity });
   }
 
-  function toggleMic() {
-    micOn = !micOn;
+  function showToast(msg) {
+    if (!overlay) return;
+    let t = overlay.querySelector(".bms-toast");
+    if (!t) {
+      t = document.createElement("div");
+      t.className = "bms-toast";
+      overlay.querySelector(".bms-card").appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(t._hide);
+    t._hide = setTimeout(() => t.classList.remove("show"), 5000);
+  }
+
+  function stopMic() {
+    if (micStream) {
+      micStream.getTracks().forEach((tr) => tr.stop());
+      micStream = null;
+    }
+    micOn = false;
+  }
+
+  async function toggleMic() {
     const btn = overlay.querySelector(".bms-mic");
+    // Микрофон в браузере доступен только в защищённом контексте (HTTPS/localhost).
+    if (!window.isSecureContext || !navigator.mediaDevices) {
+      showToast("🎙️ Микрофон работает только по HTTPS (или через localhost). Откройте Home Assistant по https://, чтобы говорить через домофон.");
+      return;
+    }
+    if (!micOn) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (e) {
+        showToast("Доступ к микрофону отклонён в браузере.");
+        return;
+      }
+      micOn = true;
+      // Здесь поток оператора отдаётся в go2rtc backchannel (talk-back на панель).
+    } else {
+      stopMic();
+    }
     btn.classList.toggle("on", micOn);
     btn.querySelector(".ic").textContent = micOn ? "🔊" : "🎙️";
-    // Реальный двусторонний звук (go2rtc WebRTC) подключается здесь;
-    // в демо это переключатель состояния микрофона (push-to-talk).
   }
 
   function showFor(id, group) {
@@ -139,7 +181,8 @@
     // Микрофон по умолчанию выключен; кнопка появляется после ответа.
     const micBtn = overlay.querySelector(".bms-mic");
     micBtn.classList.toggle("bms-hidden", ringing);
-    if (ringing) { micOn = false; micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
+    micBtn.title = window.isSecureContext ? "Микрофон (push-to-talk)" : "Микрофон доступен только по HTTPS";
+    if (ringing) { stopMic(); micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
     overlay.querySelector(".bms-answer").classList.toggle("bms-hidden", !ringing);
 
     // Видео: MJPEG-поток камеры (демо-кадры или реальный поток панели).
@@ -160,6 +203,7 @@
     if (!overlay) return;
     overlay.classList.remove("show");
     audio.pause();
+    stopMic();
     const img = overlay.querySelector(".bms-video");
     img.src = ""; img.dataset.src = "";
     activeId = null;
