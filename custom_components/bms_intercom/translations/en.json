@@ -2,11 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "BMS Домофон",
+        "title": "BMS Intercom",
         "description": "Choose how to set up the intercom.",
         "menu_options": {
           "demo": "Demo mode (virtual panel)",
-          "real": "Real Hikvision panel"
+          "real": "Real panel"
         }
       },
       "demo": {

@@ -1,4 +1,4 @@
-"""Base entity shared by all BMS Домофон platforms."""
+"""Base entity shared by all BMS Intercom platforms."""
 from __future__ import annotations
 
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -45,8 +45,8 @@ class BMSIntercomEntity(Entity):
         return DeviceInfo(
             identifiers={(DOMAIN, self.device.entry.entry_id)},
             name=self.device.name,
-            manufacturer="Hikvision",
-            model="DS-KV6113",
+            manufacturer="BMS Smart Home",
+            model="Вызывная панель",
         )
 
     async def async_added_to_hass(self) -> None:

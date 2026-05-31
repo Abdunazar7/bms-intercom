@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="BMS Intercom">
+  <!-- BMS brand badge: navy disc + white ring -->
+  <circle cx="256" cy="256" r="200" fill="#0E1A28"/>
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#FFFFFF" stroke-width="14"/>
+
+  <!-- Intercom door-station panel -->
+  <rect x="196" y="150" width="120" height="250" rx="28" fill="#FFFFFF"/>
+
+  <!-- Camera lens -->
+  <circle cx="256" cy="196" r="20" fill="#0E1A28"/>
+  <circle cx="256" cy="196" r="7" fill="#FFFFFF"/>
+
+  <!-- Speaker grille / brand dot-grid -->
+  <g fill="#0E1A28">
+    <circle cx="236" cy="258" r="11"/>
+    <circle cx="276" cy="258" r="11"/>
+    <circle cx="236" cy="298" r="11"/>
+    <circle cx="276" cy="298" r="11"/>
+  </g>
+
+  <!-- Call button -->
+  <rect x="224" y="346" width="64" height="30" rx="15" fill="#0E1A28"/>
+</svg>

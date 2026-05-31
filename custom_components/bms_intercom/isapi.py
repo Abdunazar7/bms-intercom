@@ -1,11 +1,11 @@
-"""Minimal Hikvision ISAPI client for the DS-KV door station.
+"""Minimal ISAPI client for the DS-KV door station.
 
 Covers exactly what the intercom needs:
   * read the current call status (poll)
   * answer / reject a call
   * open the door relay
 
-Uses HTTP digest auth (Hikvision's default). All endpoints follow Hikvision's
+Uses HTTP digest auth (the panel's default). All endpoints follow the panel's
 public ISAPI spec for video-intercom devices; verify against your firmware if a
 call differs (debug logging prints the exact request/response).
 """

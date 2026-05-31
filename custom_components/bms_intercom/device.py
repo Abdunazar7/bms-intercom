@@ -1,4 +1,4 @@
-"""Device controller for a single BMS Домофон panel (real or demo)."""
+"""Device controller for a single BMS Intercom panel (real or demo)."""
 from __future__ import annotations
 
 import logging

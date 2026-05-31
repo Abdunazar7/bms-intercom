@@ -1,5 +1,5 @@
 /*
- * BMS Домофон — встроенный поп-ап вызывной панели.
+ * BMS Intercom — встроенный поп-ап вызывной панели.
  *
  * Загружается интеграцией автоматически на все дашборды. Следит за состоянием
  * домофонов и при входящем вызове показывает полноэкранное окно с видео,
@@ -54,6 +54,8 @@
           overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
         .bms-head { display: flex; align-items: center; justify-content: space-between;
           padding: 14px 20px; color: #e6ebf2; font-size: 20px; font-weight: 600; }
+        .bms-brand { display: flex; align-items: center; gap: 12px; }
+        .bms-logo { width: 34px; height: 34px; display: block; flex: none; }
         .bms-badge { font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 999px; }
         .bms-badge.ring { background: #c0282890; color: #fff; animation: bmsblink 1s steps(2) infinite; }
         .bms-badge.talk { background: #1f8a4c; color: #fff; }
@@ -74,7 +76,10 @@
       </style>
       <div class="bms-card">
         <div class="bms-head">
-          <span class="bms-title">Домофон</span>
+          <span class="bms-brand">
+            <img class="bms-logo" src="${STATIC}/logo.svg" alt="BMS Intercom" />
+            <span class="bms-title">Домофон</span>
+          </span>
           <span class="bms-badge ring">ВХОДЯЩИЙ ВЫЗОВ</span>
         </div>
         <img class="bms-video" alt="видео с панели" />
@@ -198,10 +203,10 @@
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: "bms-intercom-card",
-    name: "BMS Домофон (поп-ап)",
+    name: "BMS Intercom (поп-ап)",
     description: "Поп-ап вызова работает автоматически; отдельная карточка не требуется.",
   });
 
   // eslint-disable-next-line no-console
-  console.info("%cBMS Домофон поп-ап загружен", "color:#2f6fed;font-weight:600");
+  console.info("%cBMS Intercom поп-ап загружен", "color:#2f6fed;font-weight:600");
 })();

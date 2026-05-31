@@ -1,5 +1,5 @@
 {
-  "name": "BMS Домофон (Hikvision)",
+  "name": "BMS Intercom",
   "render_readme": true,
   "homeassistant": "2024.1.0"
 }

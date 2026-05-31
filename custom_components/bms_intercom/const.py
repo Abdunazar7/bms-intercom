@@ -1,4 +1,4 @@
-"""Constants for the BMS Домофон integration."""
+"""Constants for the BMS Intercom integration."""
 from __future__ import annotations
 
 from homeassistant.const import Platform
@@ -30,7 +30,7 @@ PLATFORMS: list[Platform] = [
     Platform.BUTTON,
 ]
 
-# Hikvision RTSP main stream path (channel 101 = main, 102 = sub).
+# RTSP main stream path (channel 101 = main, 102 = sub).
 RTSP_STREAM_PATH = "/Streaming/Channels/101"
 
 # Dispatcher signal — entities re-render when device state changes.

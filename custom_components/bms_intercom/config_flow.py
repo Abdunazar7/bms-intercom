@@ -1,4 +1,4 @@
-"""Config flow for BMS Домофон."""
+"""Config flow for BMS Intercom."""
 from __future__ import annotations
 
 import voluptuous as vol
@@ -42,7 +42,7 @@ class BMSIntercomConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="demo", data_schema=schema)
 
     async def async_step_real(self, user_input=None) -> ConfigFlowResult:
-        """Real mode: connect to a Hikvision DS-KV panel over the network."""
+        """Real mode: connect to a DS-KV panel over the network."""
         errors: dict[str, str] = {}
         if user_input is not None:
             client = ISAPIClient(

@@ -1,4 +1,4 @@
-"""The BMS Домофон (Hikvision) integration."""
+"""The BMS Intercom integration."""
 from __future__ import annotations
 
 import logging
@@ -16,7 +16,9 @@ _LOGGER = logging.getLogger(__name__)
 
 _FRONTEND_FLAG = f"{DOMAIN}_frontend_registered"
 _STATIC_URL = f"/{DOMAIN}_static"
-_CARD_URL = f"{_STATIC_URL}/bms_intercom_card.js"
+# Bump on any frontend change so browsers reload the cached module.
+_CARD_VERSION = "0.2.0"
+_CARD_URL = f"{_STATIC_URL}/bms_intercom_card.js?v={_CARD_VERSION}"
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
@@ -33,7 +35,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up BMS Домофон from a config entry."""
+    """Set up BMS Intercom from a config entry."""
     await _async_register_frontend(hass)
 
     device = BMSIntercomDevice(hass, entry)
