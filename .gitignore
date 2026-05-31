@@ -1,0 +1,11 @@
+# Локальный тестовый стенд (Docker HA + мок)
+.ha-test/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db

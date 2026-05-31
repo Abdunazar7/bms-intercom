@@ -1,0 +1,39 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "BMS Домофон",
+        "description": "Choose how to set up the intercom.",
+        "menu_options": {
+          "demo": "Demo mode (virtual panel)",
+          "real": "Real Hikvision panel"
+        }
+      },
+      "demo": {
+        "title": "Demo mode",
+        "description": "A virtual intercom for testing without hardware.",
+        "data": {
+          "name": "Name"
+        }
+      },
+      "real": {
+        "title": "Connect to the panel",
+        "data": {
+          "name": "Name",
+          "host": "Panel IP address",
+          "username": "Username",
+          "password": "Password",
+          "http_port": "HTTP port (ISAPI)",
+          "rtsp_port": "RTSP port",
+          "door_no": "Door relay number"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the panel. Check IP, port and credentials."
+    },
+    "abort": {
+      "already_configured": "This panel is already configured."
+    }
+  }
+}
