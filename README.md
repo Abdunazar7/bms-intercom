@@ -1,4 +1,4 @@
-<p align="center"><img src="images/logo.png" alt="BMS Intercom" width="420"></p>
+<p align="center"><img src="custom_components/bms_intercom/brand/logo.png" alt="BMS Intercom" width="420"></p>
 
 # BMS Intercom
 
@@ -94,6 +94,10 @@
 
 Весь текст в интерфейсе (поп-ап, подписи) использует **родной шрифт Home
 Assistant** — ничего не бандлится.
+
+Иконка и логотип интеграции лежат в `custom_components/bms_intercom/brand/` и
+показываются Home Assistant напрямую (требуется HA 2026.3+; PR в каталог
+home-assistant/brands не нужен).
 
 ## Лицензия
 
