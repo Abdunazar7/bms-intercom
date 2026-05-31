@@ -123,7 +123,7 @@
     if (entity) hass.callService("button", "press", { entity_id: entity });
   }
 
-  function showToast(msg) {
+  function showToast(msg, link) {
     if (!overlay) return;
     let t = overlay.querySelector(".bms-toast");
     if (!t) {
@@ -132,9 +132,29 @@
       overlay.querySelector(".bms-card").appendChild(t);
     }
     t.textContent = msg;
+    if (link) {
+      const a = document.createElement("a");
+      a.href = link;
+      a.textContent = "Открыть по HTTPS";
+      a.style.cssText = "display:inline-block;margin-top:8px;color:#7db1ff;font-weight:700;text-decoration:none;";
+      t.appendChild(document.createElement("br"));
+      t.appendChild(a);
+    }
     t.classList.add("show");
     clearTimeout(t._hide);
-    t._hide = setTimeout(() => t.classList.remove("show"), 5000);
+    t._hide = setTimeout(() => t.classList.remove("show"), link ? 12000 : 5000);
+  }
+
+  // Если HA знает свой HTTPS-адрес (cloud/external/internal), вернём ссылку на ту же страницу по HTTPS.
+  function secureUrl() {
+    const hass = getHass();
+    const cfg = (hass && hass.config) || {};
+    for (const base of [cfg.external_url, cfg.internal_url]) {
+      if (base && base.indexOf("https://") === 0) {
+        return base.replace(/\/+$/, "") + location.pathname + location.search + location.hash;
+      }
+    }
+    return null;
   }
 
   function stopMic() {
@@ -149,7 +169,12 @@
     const btn = overlay.querySelector(".bms-mic");
     // Микрофон в браузере доступен только в защищённом контексте (HTTPS/localhost).
     if (!window.isSecureContext || !navigator.mediaDevices) {
-      showToast("🎙️ Микрофон работает только по HTTPS (или через localhost). Откройте Home Assistant по https://, чтобы говорить через домофон.");
+      const su = secureUrl();
+      if (su) {
+        showToast("Микрофон работает только по HTTPS. Откройте защищённую версию:", su);
+      } else {
+        showToast("Микрофон работает только по HTTPS (или localhost). Включите HTTPS для Home Assistant — тогда здесь появится кнопка перехода.");
+      }
       return;
     }
     if (!micOn) {
