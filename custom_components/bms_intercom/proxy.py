@@ -21,6 +21,7 @@ import ssl
 
 import aiohttp
 from aiohttp import web
+from multidict import CIMultiDict
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -152,7 +153,11 @@ class HTTPSProxy:
     async def _http(self, request: web.Request) -> web.StreamResponse:
         assert self._session is not None
         url = _BACKEND + request.rel_url.raw_path_qs
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP and k.lower() != "host"}
+        # CIMultiDict + add() preserves duplicate headers (e.g. multiple Set-Cookie).
+        headers: CIMultiDict[str] = CIMultiDict()
+        for k, v in request.headers.items():
+            if k.lower() not in _HOP and k.lower() != "host":
+                headers.add(k, v)
         try:
             backend = await self._session.request(
                 request.method, url, headers=headers,
@@ -164,7 +169,7 @@ class HTTPSProxy:
         resp = web.StreamResponse(status=backend.status)
         for k, v in backend.headers.items():
             if k.lower() not in _HOP:
-                resp.headers[k] = v
+                resp.headers.add(k, v)
         try:
             await resp.prepare(request)
             async for chunk in backend.content.iter_chunked(65536):
@@ -197,11 +202,16 @@ class HTTPSProxy:
                 elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
                     break
 
+        tasks = [
+            asyncio.create_task(pump(client_ws, server_ws)),
+            asyncio.create_task(pump(server_ws, client_ws)),
+        ]
         try:
-            await asyncio.gather(
-                pump(client_ws, server_ws),
-                pump(server_ws, client_ws),
-            )
+            # As soon as one direction ends, tear the other down — don't wait
+            # for the far side to also close (avoids hung connections).
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
         except (asyncio.CancelledError, aiohttp.ClientError, ConnectionResetError):
             pass
         finally:
