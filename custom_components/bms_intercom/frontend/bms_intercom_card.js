@@ -36,6 +36,7 @@
       const g = (groups[id] = groups[id] || { roles: {}, name: a.intercom_name || "Домофон" });
       if (a.intercom_role) g.roles[a.intercom_role] = st.entity_id;
       if (a.intercom_https_base) g.httpsBase = a.intercom_https_base;
+      if (a.intercom_https_port) g.httpsPort = a.intercom_https_port;
       if (a.intercom_role === "call") {
         g.callState = a.call_state || (st.state === "on" ? "ringing" : "idle");
       }
@@ -151,11 +152,19 @@
     const hass = getHass();
     const cfg = (hass && hass.config) || {};
     const g = currentGroup();
-    // Сначала — заданный в интеграции HTTPS-адрес, затем external/internal_url HA.
-    const bases = [g && g.httpsBase, cfg.external_url, cfg.internal_url];
-    for (const base of bases) {
+    const tail = location.pathname + location.search + location.hash;
+    // 1) явный HTTPS-адрес из настроек интеграции
+    if (g && g.httpsBase && g.httpsBase.indexOf("https://") === 0) {
+      return g.httpsBase.replace(/\/+$/, "") + tail;
+    }
+    // 2) встроенный авто-прокси интеграции: тот же хост, отдельный HTTPS-порт
+    if (g && g.httpsPort && location.hostname) {
+      return "https://" + location.hostname + ":" + g.httpsPort + tail;
+    }
+    // 3) external/internal_url Home Assistant
+    for (const base of [cfg.external_url, cfg.internal_url]) {
       if (base && base.indexOf("https://") === 0) {
-        return base.replace(/\/+$/, "") + location.pathname + location.search + location.hash;
+        return base.replace(/\/+$/, "") + tail;
       }
     }
     return null;

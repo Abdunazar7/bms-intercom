@@ -17,7 +17,9 @@ from .const import (
     CONF_HTTP_PORT,
     CONF_HTTPS_URL,
     CONF_MODE,
+    CONF_PROXY_PORT,
     CONF_RTSP_PORT,
+    DEFAULT_PROXY_PORT,
     DEFAULT_DOOR_NO,
     DEFAULT_HTTP_PORT,
     DEFAULT_NAME,
@@ -75,8 +77,13 @@ class BMSIntercomDevice:
 
     @property
     def https_url(self) -> str | None:
-        """HTTPS address of HA for the popup's microphone (secure context)."""
+        """Optional explicit HTTPS address override (secure context)."""
         return self.entry.options.get(CONF_HTTPS_URL) or None
+
+    @property
+    def proxy_port(self) -> int:
+        """Port of the built-in auto HTTPS endpoint."""
+        return self.entry.options.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT)
 
     @property
     def rtsp_url(self) -> str | None:

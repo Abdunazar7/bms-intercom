@@ -17,10 +17,12 @@ from .const import (
     CONF_HTTP_PORT,
     CONF_HTTPS_URL,
     CONF_MODE,
+    CONF_PROXY_PORT,
     CONF_RTSP_PORT,
     DEFAULT_DOOR_NO,
     DEFAULT_HTTP_PORT,
     DEFAULT_NAME,
+    DEFAULT_PROXY_PORT,
     DEFAULT_RTSP_PORT,
     DOMAIN,
     MODE_DEMO,
@@ -103,11 +105,23 @@ class BMSIntercomOptionsFlow(OptionsFlow):
             if url and not url.startswith("https://"):
                 errors["base"] = "https_required"
             else:
-                return self.async_create_entry(title="", data={CONF_HTTPS_URL: url})
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        CONF_PROXY_PORT: user_input.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
+                        CONF_HTTPS_URL: url,
+                    },
+                )
 
-        current = self.config_entry.options.get(CONF_HTTPS_URL, "")
+        opts = self.config_entry.options
         schema = vol.Schema(
-            {vol.Optional(CONF_HTTPS_URL, default=current): str}
+            {
+                vol.Optional(
+                    CONF_PROXY_PORT,
+                    default=opts.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
+                ): int,
+                vol.Optional(CONF_HTTPS_URL, default=opts.get(CONF_HTTPS_URL, "")): str,
+            }
         )
         return self.async_show_form(
             step_id="init", data_schema=schema, errors=errors

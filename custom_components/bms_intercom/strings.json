@@ -40,9 +40,10 @@
     "step": {
       "init": {
         "title": "BMS Intercom settings",
-        "description": "HTTPS address of Home Assistant for the microphone. Browsers only allow the mic in a secure context — set your HTTPS address (e.g. https://10.10.10.10:8443) and the popup will offer to switch to it.",
+        "description": "The browser microphone only works over HTTPS. The integration starts a local HTTPS endpoint on a separate port automatically — usually no change needed. Optionally set a different port or an external HTTPS address (e.g. Nabu Casa).",
         "data": {
-          "https_url": "HTTPS address (optional)"
+          "proxy_port": "Built-in HTTPS port (default 8443)",
+          "https_url": "External HTTPS address (optional)"
         }
       }
     },

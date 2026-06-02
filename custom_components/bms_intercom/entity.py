@@ -36,6 +36,7 @@ class BMSIntercomEntity(Entity):
             attrs["intercom_role"] = self._intercom_role
         if self.device.https_url:
             attrs["intercom_https_base"] = self.device.https_url
+        attrs["intercom_https_port"] = str(self.device.proxy_port)
         return attrs
 
     @property

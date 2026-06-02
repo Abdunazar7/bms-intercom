@@ -9,15 +9,17 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, PLATFORMS
+from .const import CONF_PROXY_PORT, DEFAULT_PROXY_PORT, DOMAIN, PLATFORMS
 from .device import BMSIntercomDevice
+from .proxy import HTTPSProxy
 
 _LOGGER = logging.getLogger(__name__)
 
+_PROXY_KEY = f"{DOMAIN}_https_proxy"
 _FRONTEND_FLAG = f"{DOMAIN}_frontend_registered"
 _STATIC_URL = f"/{DOMAIN}_static"
 # Bump on any frontend change so browsers reload the cached module.
-_CARD_VERSION = "0.5.0"
+_CARD_VERSION = "0.6.0"
 _CARD_URL = f"{_STATIC_URL}/bms_intercom_card.js?v={_CARD_VERSION}"
 
 
@@ -34,9 +36,20 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
     _LOGGER.debug("Поп-ап домофона зарегистрирован: %s", _CARD_URL)
 
 
+async def _async_start_proxy(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Start the built-in local HTTPS endpoint once (for the microphone)."""
+    if hass.data.get(_PROXY_KEY) is not None:
+        return
+    port = entry.options.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT)
+    proxy = HTTPSProxy(hass, port)
+    hass.data[_PROXY_KEY] = proxy
+    await proxy.async_start()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BMS Intercom from a config entry."""
     await _async_register_frontend(hass)
+    await _async_start_proxy(hass, entry)
 
     device = BMSIntercomDevice(hass, entry)
     await device.async_setup()
@@ -54,6 +67,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         device: BMSIntercomDevice = hass.data[DOMAIN].pop(entry.entry_id)
         await device.async_shutdown()
+        # Stop the shared HTTPS proxy when the last intercom is removed.
+        if not hass.data.get(DOMAIN):
+            proxy = hass.data.pop(_PROXY_KEY, None)
+            if proxy is not None:
+                await proxy.async_stop()
     return unload_ok
 
 

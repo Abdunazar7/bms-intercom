@@ -16,6 +16,11 @@ CONF_DOOR_NO = "door_no"
 # operator there when opened over plain http.
 CONF_HTTPS_URL = "https_url"
 
+# Built-in auto HTTPS endpoint (reverse proxy to HA) so the microphone works
+# without any manual setup. Port is configurable but defaults out of the box.
+CONF_PROXY_PORT = "proxy_port"
+DEFAULT_PROXY_PORT = 8443
+
 # Modes
 MODE_DEMO = "demo"
 MODE_REAL = "real"
