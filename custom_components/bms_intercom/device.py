@@ -15,6 +15,7 @@ from .const import (
     CALL_POLL_INTERVAL,
     CONF_DOOR_NO,
     CONF_HTTP_PORT,
+    CONF_HTTPS_URL,
     CONF_MODE,
     CONF_RTSP_PORT,
     DEFAULT_DOOR_NO,
@@ -71,6 +72,11 @@ class BMSIntercomDevice:
     @property
     def call_active(self) -> bool:
         return self.call_state in (STATE_RINGING, STATE_ANSWERED)
+
+    @property
+    def https_url(self) -> str | None:
+        """HTTPS address of HA for the popup's microphone (secure context)."""
+        return self.entry.options.get(CONF_HTTPS_URL) or None
 
     @property
     def rtsp_url(self) -> str | None:

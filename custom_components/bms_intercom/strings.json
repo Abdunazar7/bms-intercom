@@ -35,5 +35,19 @@
     "abort": {
       "already_configured": "This panel is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BMS Intercom settings",
+        "description": "HTTPS address of Home Assistant for the microphone. Browsers only allow the mic in a secure context — set your HTTPS address (e.g. https://10.10.10.10:8443) and the popup will offer to switch to it.",
+        "data": {
+          "https_url": "HTTPS address (optional)"
+        }
+      }
+    },
+    "error": {
+      "https_required": "The address must start with https://"
+    }
   }
 }

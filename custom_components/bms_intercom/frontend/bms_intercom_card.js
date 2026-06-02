@@ -35,6 +35,7 @@
       if (!id) continue;
       const g = (groups[id] = groups[id] || { roles: {}, name: a.intercom_name || "Домофон" });
       if (a.intercom_role) g.roles[a.intercom_role] = st.entity_id;
+      if (a.intercom_https_base) g.httpsBase = a.intercom_https_base;
       if (a.intercom_role === "call") {
         g.callState = a.call_state || (st.state === "on" ? "ringing" : "idle");
       }
@@ -149,7 +150,10 @@
   function secureUrl() {
     const hass = getHass();
     const cfg = (hass && hass.config) || {};
-    for (const base of [cfg.external_url, cfg.internal_url]) {
+    const g = currentGroup();
+    // Сначала — заданный в интеграции HTTPS-адрес, затем external/internal_url HA.
+    const bases = [g && g.httpsBase, cfg.external_url, cfg.internal_url];
+    for (const base of bases) {
       if (base && base.indexOf("https://") === 0) {
         return base.replace(/\/+$/, "") + location.pathname + location.search + location.hash;
       }

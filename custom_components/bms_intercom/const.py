@@ -11,6 +11,11 @@ CONF_RTSP_PORT = "rtsp_port"
 CONF_HTTP_PORT = "http_port"
 CONF_DOOR_NO = "door_no"
 
+# Option: HTTPS address of Home Assistant (e.g. https://10.10.10.10:8443) where
+# the browser microphone is allowed (secure context). The popup routes the
+# operator there when opened over plain http.
+CONF_HTTPS_URL = "https_url"
+
 # Modes
 MODE_DEMO = "demo"
 MODE_REAL = "real"

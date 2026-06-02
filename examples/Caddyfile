@@ -1,0 +1,19 @@
+# BMS Intercom — обратный прокси для локального HTTPS на отдельном порту.
+# HA остаётся на http://...:8123, этот прокси даёт https://...:8443 (микрофон).
+# Проверено: проксирует страницу, WebSocket и видеопоток HA.
+#
+# Сертификат: см. docs/local-https.md (самоподписанный с SAN на ваши адреса).
+# В Home Assistant включите доверие прокси:
+#   http:
+#     use_x_forwarded_for: true
+#     trusted_proxies: [127.0.0.1, 172.16.0.0/12]
+
+{
+	auto_https off
+	admin off
+}
+
+:8443 {
+	tls /ssl/intercom-fullchain.pem /ssl/intercom-privkey.pem
+	reverse_proxy 127.0.0.1:8123
+}

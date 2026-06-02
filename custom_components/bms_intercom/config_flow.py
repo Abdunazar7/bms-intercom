@@ -3,12 +3,19 @@ from __future__ import annotations
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
 
 from .const import (
     CONF_DOOR_NO,
     CONF_HTTP_PORT,
+    CONF_HTTPS_URL,
     CONF_MODE,
     CONF_RTSP_PORT,
     DEFAULT_DOOR_NO,
@@ -26,6 +33,11 @@ class BMSIntercomConfigFlow(ConfigFlow, domain=DOMAIN):
     """Guide the user through creating an intercom (demo or real)."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> "BMSIntercomOptionsFlow":
+        return BMSIntercomOptionsFlow()
 
     async def async_step_user(self, user_input=None) -> ConfigFlowResult:
         """First screen: pick demo or real panel."""
@@ -78,4 +90,25 @@ class BMSIntercomConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(
             step_id="real", data_schema=schema, errors=errors
+        )
+
+
+class BMSIntercomOptionsFlow(OptionsFlow):
+    """Options: set the HTTPS address used for the microphone (secure context)."""
+
+    async def async_step_init(self, user_input=None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            url = (user_input.get(CONF_HTTPS_URL) or "").strip().rstrip("/")
+            if url and not url.startswith("https://"):
+                errors["base"] = "https_required"
+            else:
+                return self.async_create_entry(title="", data={CONF_HTTPS_URL: url})
+
+        current = self.config_entry.options.get(CONF_HTTPS_URL, "")
+        schema = vol.Schema(
+            {vol.Optional(CONF_HTTPS_URL, default=current): str}
+        )
+        return self.async_show_form(
+            step_id="init", data_schema=schema, errors=errors
         )
