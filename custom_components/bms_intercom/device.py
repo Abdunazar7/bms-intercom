@@ -163,6 +163,66 @@ class BMSIntercomDevice:
             self.call_state = new_state
             self._notify()
 
+        # While a call is active make sure go2rtc has the ISAPI backchannel,
+        # so the browser microphone can reach the panel (two-way audio).
+        if new_state in (STATE_RINGING, STATE_ANSWERED):
+            await self._async_ensure_backchannel()
+
+    async def _async_ensure_backchannel(self) -> None:
+        """Append the Hikvision ISAPI two-way-audio source to the camera's
+        go2rtc stream.
+
+        Hikvision door stations don't do a reliable RTSP backchannel — go2rtc
+        needs a separate `isapi://user:pass@host:port/` source. Home Assistant's
+        go2rtc integration only registers the RTSP video source, so we add the
+        ISAPI one ourselves via go2rtc's REST API. Idempotent: skips streams
+        that already have it. Re-runs each poll so it survives go2rtc/HA
+        re-registering the stream.
+        """
+        cfg = self.hass.data.get("go2rtc")
+        if cfg is None:
+            return  # HA-managed go2rtc not available (e.g. external go2rtc)
+        base = getattr(cfg, "url", None)
+        session = getattr(cfg, "session", None)
+        host = self.entry.data.get(CONF_HOST)
+        if not base or session is None or not host:
+            return
+
+        user = quote(self.entry.data.get(CONF_USERNAME, ""), safe="")
+        pwd = quote(self.entry.data.get(CONF_PASSWORD, ""), safe="")
+        http_port = self.entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
+        isapi_src = f"isapi://{user}:{pwd}@{host}:{http_port}/"
+
+        try:
+            async with session.get(f"{base}/api/streams") as resp:
+                streams = await resp.json()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("[%s] go2rtc: список потоков недоступен: %s", self.name, err)
+            return
+
+        for name, info in (streams or {}).items():
+            blob = str(info)
+            if host not in blob:
+                continue  # not our camera's stream
+            if "isapi://" in blob:
+                return  # backchannel already present
+            try:
+                async with session.put(
+                    f"{base}/api/streams", params={"name": name, "src": isapi_src}
+                ) as resp:
+                    if resp.status < 300:
+                        _LOGGER.info(
+                            "[%s] go2rtc: добавлен обратный аудиоканал ISAPI к потоку '%s'",
+                            self.name, name,
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "[%s] go2rtc: не удалось добавить ISAPI-источник к '%s' (HTTP %s)",
+                            self.name, name, resp.status,
+                        )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("[%s] go2rtc: ошибка добавления ISAPI: %s", self.name, err)
+
     # --- Actions -----------------------------------------------------------
     async def async_simulate_call(self) -> None:
         """Demo only: pretend the panel started ringing."""

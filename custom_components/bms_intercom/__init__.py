@@ -1,6 +1,7 @@
 """The BMS Intercom integration."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 
@@ -18,9 +19,22 @@ _LOGGER = logging.getLogger(__name__)
 _PROXY_KEY = f"{DOMAIN}_https_proxy"
 _FRONTEND_FLAG = f"{DOMAIN}_frontend_registered"
 _STATIC_URL = f"/{DOMAIN}_static"
-# Bump on any frontend change so browsers reload the cached module.
-_CARD_VERSION = "0.11.0"
-_CARD_URL = f"{_STATIC_URL}/bms_intercom_card.js?v={_CARD_VERSION}"
+_CARD_FILE = "bms_intercom_card.js"
+
+
+def _card_version() -> str:
+    """Cache-busting tag derived from the card file itself.
+
+    Using a content hash means the popup updates in browsers on every change
+    without anyone having to bump a version by hand (and a full HA restart is
+    enough to pick it up).
+    """
+    path = os.path.join(os.path.dirname(__file__), "frontend", _CARD_FILE)
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.md5(fh.read()).hexdigest()[:10]
+    except OSError:
+        return "dev"
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
@@ -32,8 +46,10 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(_STATIC_URL, frontend_dir, False)]
     )
-    add_extra_js_url(hass, _CARD_URL)
-    _LOGGER.debug("Поп-ап домофона зарегистрирован: %s", _CARD_URL)
+    version = await hass.async_add_executor_job(_card_version)
+    card_url = f"{_STATIC_URL}/{_CARD_FILE}?v={version}"
+    add_extra_js_url(hass, card_url)
+    _LOGGER.debug("Поп-ап домофона зарегистрирован: %s", card_url)
 
 
 async def _async_start_proxy(hass: HomeAssistant, entry: ConfigEntry) -> None:
