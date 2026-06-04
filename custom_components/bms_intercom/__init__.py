@@ -19,7 +19,7 @@ _PROXY_KEY = f"{DOMAIN}_https_proxy"
 _FRONTEND_FLAG = f"{DOMAIN}_frontend_registered"
 _STATIC_URL = f"/{DOMAIN}_static"
 # Bump on any frontend change so browsers reload the cached module.
-_CARD_VERSION = "0.8.0"
+_CARD_VERSION = "0.9.0"
 _CARD_URL = f"{_STATIC_URL}/bms_intercom_card.js?v={_CARD_VERSION}"
 
 

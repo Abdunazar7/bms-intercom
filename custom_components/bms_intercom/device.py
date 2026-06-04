@@ -113,6 +113,16 @@ class BMSIntercomDevice:
             self.hass, self._async_poll, timedelta(seconds=CALL_POLL_INTERVAL)
         )
 
+    async def async_get_snapshot(self) -> bytes | None:
+        """Real mode: fetch a still JPEG from the panel (None if unavailable)."""
+        if self._client is None:
+            return None
+        try:
+            return await self._client.async_get_snapshot()
+        except ISAPIError as err:
+            _LOGGER.debug("[%s] Снимок недоступен: %s", self.name, err)
+            return None
+
     async def async_shutdown(self) -> None:
         """Stop the poller and close the ISAPI client."""
         if self._unsub_poll is not None:

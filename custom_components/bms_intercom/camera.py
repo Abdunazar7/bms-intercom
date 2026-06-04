@@ -60,7 +60,8 @@ class IntercomCamera(BMSIntercomEntity, Camera):
     ) -> bytes | None:
         if self.device.is_demo:
             return await self.hass.async_add_executor_job(self._render_demo_frame)
-        return None
+        # Real panel: a still picture for the dashboard thumbnail / poster.
+        return await self.device.async_get_snapshot()
 
     async def handle_async_mjpeg_stream(self, request):
         """Demo mode streams generated frames; real mode falls back to HA."""

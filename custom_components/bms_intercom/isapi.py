@@ -93,6 +93,17 @@ class ISAPIClient:
         """Quick reachability/credentials check used by the config flow."""
         await self._request("GET", "/ISAPI/System/deviceInfo")
 
+    async def async_get_snapshot(self, channel: int = 101) -> bytes:
+        """Return a single JPEG snapshot from the panel's camera channel.
+
+        Used for the dashboard thumbnail / still image; the live view goes
+        through RTSP + go2rtc, but a poster frame needs a plain picture.
+        """
+        resp = await self._request(
+            "GET", f"/ISAPI/Streaming/channels/{channel}/picture"
+        )
+        return resp.content
+
     async def async_get_call_status(self) -> str:
         """Return one of STATUS_IDLE / STATUS_RINGING / STATUS_ANSWERED."""
         resp = await self._request("GET", "/ISAPI/VideoIntercom/callStatus?format=json")

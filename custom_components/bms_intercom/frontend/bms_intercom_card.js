@@ -41,6 +41,7 @@
   let videoEl = null;   // активный элемент (ha-camera-stream | img)
   let videoKind = null; // 'ha' | 'mjpeg'
   let videoCam = null;  // entity_id камеры, который сейчас отрисован
+  let ringingNow = false; // звонит ли сейчас (для подсказки про звук)
 
   // --- Аудио-WebRTC для talk-back (микрофон оператора → панель) -----------
   let pc = null;          // RTCPeerConnection (только для отправки голоса)
@@ -93,9 +94,14 @@
         .bms-badge.ring { background: #c0282890; color: #fff; animation: bmsblink 1s steps(2) infinite; }
         .bms-badge.talk { background: #1f8a4c; color: #fff; }
         @keyframes bmsblink { 50% { opacity: .35; } }
-        .bms-video-slot { width: 100%; aspect-ratio: 4/3; background: #000; display: block; overflow: hidden; }
+        .bms-video-wrap { position: relative; }
+        .bms-video-slot { width: 100%; aspect-ratio: 4/3; background: #000; display: block; overflow: hidden; cursor: pointer; }
         .bms-video-slot > * { width: 100%; height: 100%; display: block; }
         .bms-video-slot img, .bms-video-slot video { object-fit: cover; }
+        .bms-sound-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+          background: rgba(0,0,0,.62); color: #fff; padding: 7px 16px; border-radius: 999px; font-size: 13px;
+          font-weight: 600; cursor: pointer; z-index: 2; display: flex; align-items: center; gap: 6px;
+          box-shadow: 0 4px 14px rgba(0,0,0,.5); }
         .bms-actions { display: flex; gap: 12px; padding: 16px 20px 22px; }
         .bms-btn { flex: 1; border: none; border-radius: 14px; padding: 16px 8px; font-size: 16px;
           font-weight: 600; color: #fff; cursor: pointer; display: flex; flex-direction: column;
@@ -122,7 +128,10 @@
           </span>
           <span class="bms-badge ring">ВХОДЯЩИЙ ВЫЗОВ</span>
         </div>
-        <div class="bms-video-slot"></div>
+        <div class="bms-video-wrap">
+          <div class="bms-video-slot"></div>
+          <div class="bms-sound-hint bms-hidden"><span>🔇</span>Нажмите, чтобы слышать панель</div>
+        </div>
         <div class="bms-actions">
           <button class="bms-btn bms-answer"><span class="ic">📞</span>Ответить</button>
           <button class="bms-btn bms-mic bms-hidden"><span class="ic">🎙️</span>Микрофон</button>
@@ -141,6 +150,10 @@
     overlay.querySelector(".bms-reject").addEventListener("click", () => callRole("reject"));
     overlay.querySelector(".bms-door").addEventListener("click", () => callRole("open_door"));
     overlay.querySelector(".bms-mic").addEventListener("click", toggleMic);
+    // Тап по видео включает/выключает звук панели (autoplay со звуком браузер
+    // блокирует, поэтому видео всегда стартует без звука).
+    overlay.querySelector(".bms-video-slot").addEventListener("click", () => setVideoMuted(!isVideoMuted()));
+    overlay.querySelector(".bms-sound-hint").addEventListener("click", (e) => { e.stopPropagation(); setVideoMuted(false); });
   }
 
   function currentGroup() {
@@ -215,18 +228,50 @@
     videoEl = null;
     videoKind = null;
     videoCam = null;
+    updateSoundHint();
+  }
+
+  function innerVideo() {
+    if (videoKind === "ha" && videoEl && videoEl.shadowRoot) {
+      // ha-camera-stream разворачивается в ha-hls-player/ha-web-rtc-player,
+      // внутри которых лежит реальный <video>. Найдём его на любой глубине.
+      let v = videoEl.shadowRoot.querySelector("video");
+      if (v) return v;
+      const player = videoEl.shadowRoot.querySelector("ha-hls-player, ha-web-rtc-player");
+      if (player && player.shadowRoot) return player.shadowRoot.querySelector("video");
+    }
+    return null;
+  }
+
+  function isVideoMuted() {
+    if (videoKind !== "ha" || !videoEl) return true;
+    const inner = innerVideo();
+    return inner ? inner.muted : videoEl.muted !== false;
+  }
+
+  function setVideoMuted(muted) {
+    if (videoKind !== "ha" || !videoEl) return;
+    try {
+      videoEl.muted = muted;
+      const inner = innerVideo();
+      if (inner) {
+        inner.muted = muted;
+        if (!muted) inner.play().catch(() => {});
+      }
+    } catch (e) { /* ignore */ }
+    updateSoundHint();
   }
 
   function unmuteVideo() {
-    if (!videoEl) return;
-    try {
-      if (videoKind === "ha") {
-        videoEl.muted = false;
-        // У ha-camera-stream внутри лежит <video> — снимем mute и с него.
-        const inner = videoEl.shadowRoot && videoEl.shadowRoot.querySelector("video");
-        if (inner) { inner.muted = false; inner.play().catch(() => {}); }
-      }
-    } catch (e) { /* ignore */ }
+    setVideoMuted(false);
+  }
+
+  function updateSoundHint() {
+    const hint = overlay && overlay.querySelector(".bms-sound-hint");
+    if (!hint) return;
+    // Подсказку показываем только в разговоре, когда видео есть, но звук выключен.
+    const show = videoKind === "ha" && !!videoEl && !ringingNow && isVideoMuted();
+    hint.classList.toggle("bms-hidden", !show);
   }
 
   function renderVideo(hass, cam, st, ringing) {
@@ -242,7 +287,9 @@
         el.hass = hass;
         el.stateObj = st;
         el.controls = false;
-        el.muted = ringing; // звук панели включим после «Ответить»
+        // Всегда стартуем без звука: иначе браузер блокирует autoplay и видео
+        // остаётся чёрным. Звук панели включается тапом по видео / кнопкой.
+        el.muted = true;
         slot.appendChild(el);
         videoEl = el;
         videoKind = "ha";
@@ -251,9 +298,8 @@
       } else {
         videoEl.hass = hass;
         videoEl.stateObj = st;
-        if (ringing) videoEl.muted = true;
       }
-      if (!ringing) unmuteVideo();
+      updateSoundHint();
     } else if (st) {
       // Демо / панель без потока / нет ha-camera-stream → MJPEG-кадр.
       if (videoKind !== "mjpeg" || videoCam !== cam) {
@@ -433,6 +479,7 @@
     const hass = getHass();
     const cam = group.roles.camera;
     const ringing = group.callState === "ringing";
+    ringingNow = ringing;
 
     overlay.querySelector(".bms-title").textContent = group.name;
     const badge = overlay.querySelector(".bms-badge");
