@@ -174,15 +174,32 @@ class BMSIntercomDevice:
         self._notify()
 
     async def async_reject(self) -> None:
-        """Reject / hang up the call."""
+        """Reject a ringing call or hang up an active conversation.
+
+        The panel uses different commands for the two cases: an answered call
+        is ended with `hangUp`, a still-ringing one with `reject`. We send the
+        command that matches the current state and fall back to the other one
+        if a given firmware disagrees, so the button always ends the call.
+        """
         if self.is_demo:
             _LOGGER.info("[%s] Вызов сброшен (демо)", self.name)
         elif self._client is not None:
+            answered = self.call_state == STATE_ANSWERED
+            primary = self._client.async_hangup if answered else self._client.async_reject
+            fallback = self._client.async_reject if answered else self._client.async_hangup
             try:
-                await self._client.async_reject()
+                await primary()
             except ISAPIError as err:
-                _LOGGER.error("[%s] Не удалось сбросить: %s", self.name, err)
-                return
+                _LOGGER.warning(
+                    "[%s] Основная команда завершения не прошла (%s), пробую запасную",
+                    self.name,
+                    err,
+                )
+                try:
+                    await fallback()
+                except ISAPIError as err2:
+                    _LOGGER.error("[%s] Не удалось завершить вызов: %s", self.name, err2)
+                    return
         self.call_state = STATE_IDLE
         self._notify()
 

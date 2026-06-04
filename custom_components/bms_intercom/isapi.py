@@ -111,11 +111,24 @@ class ISAPIClient:
         )
 
     async def async_reject(self) -> None:
-        """Reject / hang up the call."""
+        """Reject an incoming (not yet answered) call."""
         await self._request(
             "PUT",
             "/ISAPI/VideoIntercom/callSignal?format=json",
             json={"CallSignal": {"cmdType": "reject"}},
+        )
+
+    async def async_hangup(self) -> None:
+        """Hang up an active (already answered) call.
+
+        Hikvision treats a ringing call and an in-progress conversation
+        differently: `reject` only declines a call that is still ringing,
+        while `hangUp` is what ends a call you have already answered.
+        """
+        await self._request(
+            "PUT",
+            "/ISAPI/VideoIntercom/callSignal?format=json",
+            json={"CallSignal": {"cmdType": "hangUp"}},
         )
 
     async def async_open_door(self) -> None:

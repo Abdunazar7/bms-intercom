@@ -5,6 +5,16 @@
  * домофонов и при входящем вызове показывает полноэкранное окно с видео,
  * звуком звонка и кнопками Ответить / Сбросить / Открыть дверь.
  *
+ * Видео и звук: для реальной панели используется тот же WebRTC-конвейер
+ * Home Assistant (go2rtc), что и в обычной карточке камеры — поэтому картинка
+ * и звук с панели приходят сразу. Микрофон оператора (talk-back) добавляется
+ * в то же WebRTC-соединение отдельной аудиодорожкой (sendrecv): если go2rtc
+ * умеет обратный канал к панели (Hikvision two-way audio), голос уходит на
+ * домофон. Если нет — видео и входящий звук всё равно работают.
+ *
+ * В демо-режиме (без железа) камера отдаёт нарисованный MJPEG-поток, для него
+ * остаётся простой <img>.
+ *
  * Ничего настраивать в дашборде не нужно — модуль находит сущности по
  * атрибутам intercom_id / intercom_role, которые проставляет интеграция.
  */
@@ -13,6 +23,7 @@
 
   const STATIC = "/bms_intercom_static";
   const POLL_MS = 400;
+  const FEATURE_STREAM = 2; // CameraEntityFeature.STREAM
 
   let overlay = null;
   let audio = null;
@@ -20,6 +31,15 @@
   let micOn = false;
   let micStream = null; // активный поток микрофона оператора (если разрешён)
   let lastSig = null;  // подпись текущего состояния, чтобы не перерисовывать зря
+
+  // --- Состояние WebRTC-сессии -------------------------------------------
+  let pc = null;          // RTCPeerConnection с панелью (через go2rtc HA)
+  let audioSender = null; // RTCRtpSender аудиодорожки (для talk-back)
+  let wrUnsub = null;     // функция отписки от camera/webrtc/offer
+  let wrSession = null;   // session_id, выданный Home Assistant
+  let wrCamEntity = null; // entity_id камеры, к которой привязан текущий pc
+  let wrPending = [];     // ICE-кандидаты, накопленные до получения session_id
+  let wrToken = 0;        // защита от гонок между teardown и start
 
   function getHass() {
     const el = document.querySelector("home-assistant");
@@ -90,7 +110,8 @@
           </span>
           <span class="bms-badge ring">ВХОДЯЩИЙ ВЫЗОВ</span>
         </div>
-        <img class="bms-video" alt="видео с панели" />
+        <video class="bms-video" autoplay playsinline muted></video>
+        <img class="bms-video bms-video-img bms-hidden" alt="видео с панели" />
         <div class="bms-actions">
           <button class="bms-btn bms-answer"><span class="ic">📞</span>Ответить</button>
           <button class="bms-btn bms-mic bms-hidden"><span class="ic">🎙️</span>Микрофон</button>
@@ -123,6 +144,11 @@
     if (!hass || !g) return;
     const entity = g.roles[role];
     if (entity) hass.callService("button", "press", { entity_id: entity });
+    // «Ответить» — пользовательский жест: сразу включаем звук панели.
+    if (role === "answer") {
+      const v = overlay && overlay.querySelector("video.bms-video");
+      if (v) { v.muted = false; v.play().catch(() => {}); }
+    }
   }
 
   function showToast(msg, link) {
@@ -170,6 +196,138 @@
     return null;
   }
 
+  // --- WebRTC: видео с панели + обратный аудиоканал (talk-back) -----------
+  function sendCandidate(cam, candidate) {
+    const hass = getHass();
+    if (!hass) return;
+    // До выдачи session_id кандидаты копим — отправим, как только он придёт.
+    if (!wrSession) { wrPending.push(candidate); return; }
+    const c = { candidate: candidate.candidate || "" };
+    if (candidate.sdpMid != null) c.sdpMid = candidate.sdpMid;
+    if (candidate.sdpMLineIndex != null) c.sdpMLineIndex = candidate.sdpMLineIndex;
+    hass.connection
+      .sendMessagePromise({
+        type: "camera/webrtc/candidate",
+        entity_id: cam,
+        session_id: wrSession,
+        candidate: c,
+      })
+      .catch(() => {});
+  }
+
+  function handleSignal(msg) {
+    if (!pc || !msg) return;
+    if (msg.type === "session") {
+      wrSession = msg.session_id;
+      const queued = wrPending;
+      wrPending = [];
+      for (const c of queued) sendCandidate(wrCamEntity, c);
+    } else if (msg.type === "answer") {
+      pc.setRemoteDescription({ type: "answer", sdp: msg.answer }).catch((e) =>
+        console.warn("BMS Intercom: setRemoteDescription", e)
+      );
+    } else if (msg.type === "candidate") {
+      let cand = msg.candidate;
+      if (typeof cand === "string") cand = { candidate: cand };
+      if (cand && cand.candidate != null) pc.addIceCandidate(cand).catch(() => {});
+    } else if (msg.type === "error") {
+      console.warn("BMS Intercom: WebRTC error", msg);
+    }
+  }
+
+  async function startWebrtc(cam) {
+    const hass = getHass();
+    if (!hass || !cam || !hass.connection) return;
+    stopWebrtc();
+    const myToken = ++wrToken;
+    wrCamEntity = cam;
+    wrSession = null;
+    wrPending = [];
+
+    // ICE-серверы: на одной LAN хватает host-кандидатов, но если HA отдаёт
+    // конфиг (STUN/TURN) — используем его.
+    let iceServers = [{ urls: "stun:stun.home-assistant.io:80" }];
+    try {
+      const cfg = await hass.connection.sendMessagePromise({
+        type: "camera/webrtc/get_client_config",
+        entity_id: cam,
+      });
+      const servers = cfg && cfg.configuration && cfg.configuration.iceServers;
+      if (Array.isArray(servers)) iceServers = servers;
+    } catch (e) {
+      /* старый HA без этой команды — продолжаем с host-кандидатами */
+    }
+    if (myToken !== wrToken) return; // нас уже сменили/закрыли
+
+    pc = new RTCPeerConnection({ iceServers });
+    pc.addTransceiver("video", { direction: "recvonly" });
+    // sendrecv: принимаем звук панели и держим дорожку для микрофона оператора.
+    const at = pc.addTransceiver("audio", { direction: "sendrecv" });
+    audioSender = at.sender;
+
+    pc.ontrack = (ev) => {
+      const v = overlay.querySelector("video.bms-video");
+      const stream = ev.streams && ev.streams[0];
+      if (v && stream && v.srcObject !== stream) {
+        v.srcObject = stream;
+        v.play().catch(() => {});
+      }
+    };
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) sendCandidate(cam, ev.candidate);
+    };
+
+    try {
+      const offer = await pc.createOffer({
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: true,
+      });
+      await pc.setLocalDescription(offer);
+      if (myToken !== wrToken) return;
+      wrUnsub = await hass.connection.subscribeMessage(
+        (msg) => {
+          if (myToken === wrToken) handleSignal(msg);
+        },
+        {
+          type: "camera/webrtc/offer",
+          entity_id: cam,
+          offer: pc.localDescription.sdp,
+        }
+      );
+    } catch (e) {
+      console.warn("BMS Intercom: не удалось начать WebRTC", e);
+    }
+  }
+
+  function stopWebrtc() {
+    wrToken++; // обесценить любые незавершённые колбэки текущей сессии
+    if (wrUnsub) {
+      try {
+        const r = wrUnsub();
+        if (r && typeof r.catch === "function") r.catch(() => {});
+      } catch (e) {
+        /* ignore */
+      }
+      wrUnsub = null;
+    }
+    if (pc) {
+      try {
+        pc.ontrack = null;
+        pc.onicecandidate = null;
+        pc.close();
+      } catch (e) {
+        /* ignore */
+      }
+      pc = null;
+    }
+    audioSender = null;
+    wrSession = null;
+    wrCamEntity = null;
+    wrPending = [];
+    const v = overlay && overlay.querySelector("video.bms-video");
+    if (v) v.srcObject = null;
+  }
+
   function stopMic() {
     if (micStream) {
       micStream.getTracks().forEach((tr) => tr.stop());
@@ -197,9 +355,31 @@
         showToast("Доступ к микрофону отклонён в браузере.");
         return;
       }
+      // Отдаём поток оператора в WebRTC (go2rtc backchannel → панель).
+      const track = micStream.getAudioTracks()[0];
+      if (audioSender && track) {
+        try {
+          await audioSender.replaceTrack(track);
+        } catch (e) {
+          console.warn("BMS Intercom: replaceTrack(mic)", e);
+          showToast("Не удалось подключить микрофон к разговору.");
+          stopMic();
+          return;
+        }
+      } else if (!audioSender) {
+        showToast("Звуковой канал ещё не готов. Нажмите «Ответить» и попробуйте снова.");
+        stopMic();
+        return;
+      }
       micOn = true;
-      // Здесь поток оператора отдаётся в go2rtc backchannel (talk-back на панель).
     } else {
+      if (audioSender) {
+        try {
+          await audioSender.replaceTrack(null);
+        } catch (e) {
+          /* ignore */
+        }
+      }
       stopMic();
     }
     btn.classList.toggle("on", micOn);
@@ -223,10 +403,31 @@
     if (ringing) { stopMic(); micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
     overlay.querySelector(".bms-answer").classList.toggle("bms-hidden", !ringing);
 
-    // Видео: MJPEG-поток камеры (демо-кадры или реальный поток панели).
-    const img = overlay.querySelector(".bms-video");
-    if (cam && hass.states[cam]) {
-      const token = hass.states[cam].attributes.access_token;
+    // Видео: для реальной панели — WebRTC (go2rtc), для демо — MJPEG <img>.
+    const st = cam && hass.states[cam];
+    const canStream = st && ((st.attributes.supported_features || 0) & FEATURE_STREAM);
+    const vid = overlay.querySelector("video.bms-video");
+    const img = overlay.querySelector("img.bms-video-img");
+
+    if (canStream) {
+      img.classList.add("bms-hidden");
+      img.src = "";
+      vid.classList.remove("bms-hidden");
+      // Пока звонок только звонит — превью без звука (играет рингтон).
+      // После ответа звук панели включается (жест уже был на «Ответить»).
+      vid.muted = ringing;
+      if (wrCamEntity !== cam || !pc) {
+        startWebrtc(cam);
+      } else if (!ringing) {
+        vid.play().catch(() => {});
+      }
+    } else if (st) {
+      // Демо/панель без потока: нарисованный MJPEG-кадр.
+      stopWebrtc();
+      vid.classList.add("bms-hidden");
+      vid.srcObject = null;
+      img.classList.remove("bms-hidden");
+      const token = st.attributes.access_token;
       const url = `/api/camera_proxy_stream/${cam}?token=${token}`;
       if (img.dataset.src !== url) { img.dataset.src = url; img.src = url; }
     }
@@ -242,8 +443,11 @@
     overlay.classList.remove("show");
     audio.pause();
     stopMic();
-    const img = overlay.querySelector(".bms-video");
-    img.src = ""; img.dataset.src = "";
+    stopWebrtc();
+    const img = overlay.querySelector("img.bms-video-img");
+    if (img) { img.src = ""; img.dataset.src = ""; }
+    const vid = overlay.querySelector("video.bms-video");
+    if (vid) { vid.srcObject = null; vid.muted = true; }
     activeId = null;
     lastSig = null;
   }
