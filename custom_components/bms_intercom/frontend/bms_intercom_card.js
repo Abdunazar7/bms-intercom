@@ -150,10 +150,12 @@
     overlay.querySelector(".bms-reject").addEventListener("click", () => callRole("reject"));
     overlay.querySelector(".bms-door").addEventListener("click", () => callRole("open_door"));
     overlay.querySelector(".bms-mic").addEventListener("click", toggleMic);
-    // Тап по видео включает/выключает звук панели (autoplay со звуком браузер
-    // блокирует, поэтому видео всегда стартует без звука).
-    overlay.querySelector(".bms-video-slot").addEventListener("click", () => setVideoMuted(!isVideoMuted()));
+    // Autoplay со звуком браузер блокирует, поэтому видео стартует без звука,
+    // а звук панели включаем при первом же взаимодействии пользователя.
+    overlay.querySelector(".bms-video-slot").addEventListener("click", () => setVideoMuted(false));
     overlay.querySelector(".bms-sound-hint").addEventListener("click", (e) => { e.stopPropagation(); setVideoMuted(false); });
+    // Любой первый тап в окне (по кнопке/видео) — это жест: включаем звук панели.
+    overlay.addEventListener("pointerdown", () => { if (!ringingNow) setVideoMuted(false); }, true);
   }
 
   function currentGroup() {
@@ -231,16 +233,57 @@
     updateSoundHint();
   }
 
-  function innerVideo() {
-    if (videoKind === "ha" && videoEl && videoEl.shadowRoot) {
-      // ha-camera-stream разворачивается в ha-hls-player/ha-web-rtc-player,
-      // внутри которых лежит реальный <video>. Найдём его на любой глубине.
-      let v = videoEl.shadowRoot.querySelector("video");
-      if (v) return v;
-      const player = videoEl.shadowRoot.querySelector("ha-hls-player, ha-web-rtc-player");
-      if (player && player.shadowRoot) return player.shadowRoot.querySelector("video");
+  // ha-camera-stream разворачивается в ha-hls-player / ha-web-rtc-player,
+  // внутри которых (в их shadow DOM) лежит реальный <video>. Ищем рекурсивно.
+  function deepFindVideo(root) {
+    if (!root || !root.querySelector) return null;
+    const direct = root.querySelector("video");
+    if (direct) return direct;
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) {
+        const found = deepFindVideo(el.shadowRoot);
+        if (found) return found;
+      }
     }
     return null;
+  }
+
+  function innerVideo() {
+    if (videoKind === "ha" && videoEl) {
+      return deepFindVideo(videoEl.shadowRoot) || deepFindVideo(videoEl);
+    }
+    return null;
+  }
+
+  function waitInnerVideo(tries) {
+    tries = tries || 25;
+    return new Promise((resolve) => {
+      let n = 0;
+      const t = setInterval(() => {
+        const v = innerVideo();
+        if (v || ++n >= tries) { clearInterval(t); resolve(v); }
+      }, 100);
+    });
+  }
+
+  // Пытаемся включить звук панели. Если браузер блокирует autoplay со звуком —
+  // тихо откатываемся в muted (видео продолжает идти) и оставляем подсказку.
+  async function attemptUnmute() {
+    if (videoKind !== "ha" || !videoEl) return false;
+    const inner = await waitInnerVideo();
+    try {
+      videoEl.muted = false;
+      if (inner) {
+        inner.muted = false;
+        const p = inner.play();
+        if (p && typeof p.then === "function") await p;
+      }
+      updateSoundHint();
+      return true;
+    } catch (e) {
+      setVideoMuted(true);
+      return false;
+    }
   }
 
   function isVideoMuted() {
@@ -320,6 +363,22 @@
   }
 
   // --- Talk-back: микрофон оператора → панель через go2rtc backchannel -----
+  // Вернуть направление аудиосекции SDP (sendrecv/recvonly/sendonly/inactive).
+  function audioDirection(sdp) {
+    if (!sdp) return null;
+    const lines = sdp.split(/\r?\n/);
+    let inAudio = false;
+    let dir = null;
+    for (const line of lines) {
+      if (line.startsWith("m=")) inAudio = line.startsWith("m=audio");
+      else if (inAudio && line.startsWith("a=")) {
+        const a = line.slice(2).trim();
+        if (a === "sendrecv" || a === "recvonly" || a === "sendonly" || a === "inactive") dir = a;
+      }
+    }
+    return dir;
+  }
+
   function sendCandidate(cam, candidate) {
     const hass = getHass();
     if (!hass) return;
@@ -345,6 +404,18 @@
       wrPending = [];
       for (const c of queued) sendCandidate(wrCamEntity, c);
     } else if (msg.type === "answer") {
+      // Диагностика обратного канала: если go2rtc/панель готовы принимать наш
+      // звук, в аудиосекции ответа будет recvonly/sendrecv. Если sendonly/
+      // inactive — обратного канала к панели нет (нужен backchannel в go2rtc).
+      const dir = audioDirection(msg.answer);
+      const ok = dir === "recvonly" || dir === "sendrecv";
+      console.info(
+        "%cBMS Intercom: talk-back ответ панели — аудио %s (обратный канал %s)",
+        LOG, dir || "?", ok ? "ЕСТЬ ✅" : "НЕТ ❌"
+      );
+      if (!ok) {
+        showToast("Панель не принимает обратный звук (go2rtc без backchannel). Видео и входящий звук работают.");
+      }
       pc.setRemoteDescription({ type: "answer", sdp: msg.answer }).catch((e) =>
         console.warn("BMS Intercom: setRemoteDescription", e)
       );
@@ -495,6 +566,9 @@
 
     const st = cam && hass.states[cam];
     if (st) renderVideo(hass, cam, st, ringing);
+    // В разговоре пытаемся сразу включить звук панели (если жест уже был —
+    // например, ответили из попапа; иначе сработает при первом тапе).
+    if (st && !ringing) attemptUnmute();
 
     overlay.classList.add("show");
     if (ringing) { audio.play().catch(() => {}); }
