@@ -60,6 +60,7 @@
   // Сгруппировать сущности всех домофонов по intercom_id.
   function groupIntercoms(hass) {
     const groups = {};
+    if (!hass || !hass.states) return groups;
     for (const st of Object.values(hass.states)) {
       const a = st.attributes || {};
       const id = a.intercom_id;
@@ -457,13 +458,41 @@
     const tr = pc.addTransceiver(track, { direction: "sendrecv" });
     audioSender = tr.sender;
 
+    // Hikvision two-way audio работает на G.711 (PCMU/PCMA, 8 кГц). Браузер по
+    // умолчанию шлёт Opus 48 кГц, который go2rtc не перекодирует для панели —
+    // поэтому просим браузер отдавать G.711, тогда звук доходит до домофона.
+    try {
+      const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities
+        ? RTCRtpSender.getCapabilities("audio")
+        : null;
+      if (caps && tr.setCodecPreferences) {
+        const isG711 = (c) => /pcmu|pcma|g722/i.test(c.mimeType);
+        const pref = caps.codecs.filter(isG711);
+        const rest = caps.codecs.filter((c) => !isG711(c));
+        if (pref.length) {
+          tr.setCodecPreferences([...pref, ...rest]);
+          console.info("%cBMS Intercom: talk-back предпочитаю G.711 (%s)", LOG,
+            pref.map((c) => c.mimeType.split("/")[1]).join(", "));
+        }
+      }
+    } catch (e) {
+      console.warn("BMS Intercom: setCodecPreferences не поддержан", e);
+    }
+
     pc.onicecandidate = (ev) => {
       if (ev.candidate) sendCandidate(cam, ev.candidate);
     };
     pc.onconnectionstatechange = () => {
       if (!pc) return;
       console.info("%cBMS Intercom: talk-back %s", LOG, pc.connectionState);
-      if (pc.connectionState === "failed") {
+      if (pc.connectionState === "connected") {
+        // Покажем, в каком кодеке реально уходит микрофон на панель.
+        try {
+          const params = audioSender && audioSender.getParameters();
+          const codec = params && params.codecs && params.codecs[0];
+          if (codec) console.info("%cBMS Intercom: микрофон уходит кодеком %s", LOG, codec.mimeType);
+        } catch (e) { /* ignore */ }
+      } else if (pc.connectionState === "failed") {
         showToast("Аудиоканал к панели не установился.");
       }
     };
