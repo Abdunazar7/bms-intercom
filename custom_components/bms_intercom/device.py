@@ -70,6 +70,7 @@ class BMSIntercomDevice:
         self._backchannel_ready = False        # ISAPI-источник уже в go2rtc
         self._backchannel_warned = False       # чтобы не спамить, если go2rtc нет
         self._backchannel_unsupported = False  # go2rtc без isapi-модуля
+        self._go2rtc_probed = False            # версию go2rtc уже залогировали
 
     @property
     def is_demo(self) -> bool:
@@ -199,6 +200,19 @@ class BMSIntercomDevice:
         host = self.entry.data.get(CONF_HOST)
         if not base or session is None or not host:
             return
+
+        # Один раз сообщим версию и адрес go2rtc — чтобы понять, есть ли в этой
+        # сборке isapi-модуль (нужен для двустороннего звука).
+        if not self._go2rtc_probed:
+            self._go2rtc_probed = True
+            try:
+                async with session.get(f"{base}/api") as resp:
+                    info = await resp.json()
+                _LOGGER.warning(
+                    "[%s] go2rtc: версия %s, url=%s", self.name, info.get("version"), base
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("[%s] go2rtc /api недоступен (%s), url=%s", self.name, err, base)
 
         user = quote(self.entry.data.get(CONF_USERNAME, ""), safe="")
         pwd = quote(self.entry.data.get(CONF_PASSWORD, ""), safe="")
