@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_HTTP_PORT,
     DEFAULT_NAME,
     DEFAULT_RTSP_PORT,
+    DOMAIN,
     MODE_DEMO,
     RTSP_STREAM_PATH,
     SIGNAL_STATE_UPDATED,
@@ -217,22 +218,35 @@ class BMSIntercomDevice:
             return
 
         names = list((streams or {}).keys())
-        matched = False
-        for name, info in (streams or {}).items():
-            blob = str(info)
-            is_ours = (cam_eid and name == cam_eid) or host in blob
-            if not is_ours:
-                continue
-            matched = True
-            if "isapi://" in blob:
+        # Какие потоки go2rtc принадлежат нашей камере: сперва точное имя
+        # (entity_id), иначе все, где встречается хост панели.
+        if cam_eid and cam_eid in (streams or {}):
+            targets = [cam_eid]
+        else:
+            targets = [n for n, info in (streams or {}).items() if host in str(info)]
+
+        if not targets:
+            _LOGGER.debug(
+                "[%s] go2rtc: поток камеры ещё не создан (ищу '%s'/host %s среди %s)",
+                self.name, cam_eid, host, names,
+            )
+            return
+
+        rtsp = self.rtsp_url
+        for name in targets:
+            if "isapi://" in str(streams.get(name)):
                 if not self._backchannel_ready:
                     self._backchannel_ready = True
                     _LOGGER.info("[%s] go2rtc: обратный канал ISAPI на месте ('%s')", self.name, name)
-                return  # backchannel already present
+                continue
+            # PUT задаёт ИМЕННО этот набор источников (заменяет). Поэтому шлём
+            # rtsp ПЕРВЫМ и isapi вторым: видео сохраняется, добавляется
+            # обратный звук. На старых go2rtc читается только первый src —
+            # тогда останется только rtsp (видео цело, talk-back просто не
+            # появится), сломать видео это не может.
+            params = [("name", name), ("src", rtsp), ("src", isapi_src)]
             try:
-                async with session.put(
-                    f"{base}/api/streams", params={"name": name, "src": isapi_src}
-                ) as resp:
+                async with session.put(f"{base}/api/streams", params=params) as resp:
                     if resp.status < 300:
                         self._backchannel_ready = True
                         _LOGGER.info(
@@ -240,18 +254,13 @@ class BMSIntercomDevice:
                             self.name, name,
                         )
                     else:
+                        body = await resp.text()
                         _LOGGER.warning(
-                            "[%s] go2rtc: не удалось добавить ISAPI-источник к '%s' (HTTP %s)",
-                            self.name, name, resp.status,
+                            "[%s] go2rtc: PUT '%s' вернул HTTP %s: %s",
+                            self.name, name, resp.status, body[:200],
                         )
             except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("[%s] go2rtc: ошибка добавления ISAPI: %s", self.name, err)
-
-        if not matched:
-            _LOGGER.debug(
-                "[%s] go2rtc: поток камеры ещё не создан (ищу '%s'/host %s среди %s)",
-                self.name, cam_eid, host, names,
-            )
+                _LOGGER.debug("[%s] go2rtc: ошибка PUT: %s", self.name, err)
 
     # --- Actions -----------------------------------------------------------
     async def async_simulate_call(self) -> None:
