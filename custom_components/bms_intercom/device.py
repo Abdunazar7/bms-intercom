@@ -66,6 +66,8 @@ class BMSIntercomDevice:
         self.available: bool = True
         self._client: ISAPIClient | None = None
         self._unsub_poll = None
+        self._backchannel_ready = False   # ISAPI-источник уже в go2rtc
+        self._backchannel_warned = False  # чтобы не спамить, если go2rtc нет
 
     @property
     def is_demo(self) -> bool:
@@ -181,7 +183,13 @@ class BMSIntercomDevice:
         """
         cfg = self.hass.data.get("go2rtc")
         if cfg is None:
-            return  # HA-managed go2rtc not available (e.g. external go2rtc)
+            if not self._backchannel_warned:
+                self._backchannel_warned = True
+                _LOGGER.warning(
+                    "[%s] go2rtc HA не найден (hass.data['go2rtc']). Двусторонний "
+                    "звук требует встроенного go2rtc Home Assistant.", self.name,
+                )
+            return
         base = getattr(cfg, "url", None)
         session = getattr(cfg, "session", None)
         host = self.entry.data.get(CONF_HOST)
@@ -193,6 +201,14 @@ class BMSIntercomDevice:
         http_port = self.entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
         isapi_src = f"isapi://{user}:{pwd}@{host}:{http_port}/"
 
+        # Имя потока, под которым HA зарегистрировал нашу камеру в go2rtc
+        # (обычно совпадает с entity_id камеры).
+        from homeassistant.helpers import entity_registry as er
+
+        cam_eid = er.async_get(self.hass).async_get_entity_id(
+            "camera", DOMAIN, f"{self.entry.entry_id}_camera"
+        )
+
         try:
             async with session.get(f"{base}/api/streams") as resp:
                 streams = await resp.json()
@@ -200,17 +216,25 @@ class BMSIntercomDevice:
             _LOGGER.debug("[%s] go2rtc: список потоков недоступен: %s", self.name, err)
             return
 
+        names = list((streams or {}).keys())
+        matched = False
         for name, info in (streams or {}).items():
             blob = str(info)
-            if host not in blob:
-                continue  # not our camera's stream
+            is_ours = (cam_eid and name == cam_eid) or host in blob
+            if not is_ours:
+                continue
+            matched = True
             if "isapi://" in blob:
+                if not self._backchannel_ready:
+                    self._backchannel_ready = True
+                    _LOGGER.info("[%s] go2rtc: обратный канал ISAPI на месте ('%s')", self.name, name)
                 return  # backchannel already present
             try:
                 async with session.put(
                     f"{base}/api/streams", params={"name": name, "src": isapi_src}
                 ) as resp:
                     if resp.status < 300:
+                        self._backchannel_ready = True
                         _LOGGER.info(
                             "[%s] go2rtc: добавлен обратный аудиоканал ISAPI к потоку '%s'",
                             self.name, name,
@@ -222,6 +246,12 @@ class BMSIntercomDevice:
                         )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("[%s] go2rtc: ошибка добавления ISAPI: %s", self.name, err)
+
+        if not matched:
+            _LOGGER.debug(
+                "[%s] go2rtc: поток камеры ещё не создан (ищу '%s'/host %s среди %s)",
+                self.name, cam_eid, host, names,
+            )
 
     # --- Actions -----------------------------------------------------------
     async def async_simulate_call(self) -> None:
