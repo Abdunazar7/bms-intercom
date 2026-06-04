@@ -201,18 +201,17 @@ class BMSIntercomDevice:
         if not base or session is None or not host:
             return
 
-        # Один раз сообщим версию и адрес go2rtc — чтобы понять, есть ли в этой
-        # сборке isapi-модуль (нужен для двустороннего звука).
+        # Один раз залогируем версию и адрес go2rtc (для диагностики).
         if not self._go2rtc_probed:
             self._go2rtc_probed = True
             try:
                 async with session.get(f"{base}/api") as resp:
                     info = await resp.json()
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "[%s] go2rtc: версия %s, url=%s", self.name, info.get("version"), base
                 )
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("[%s] go2rtc /api недоступен (%s), url=%s", self.name, err, base)
+                _LOGGER.debug("[%s] go2rtc /api недоступен (%s), url=%s", self.name, err, base)
 
         user = quote(self.entry.data.get(CONF_USERNAME, ""), safe="")
         pwd = quote(self.entry.data.get(CONF_PASSWORD, ""), safe="")
@@ -254,7 +253,7 @@ class BMSIntercomDevice:
             if "isapi://" in str(streams.get(name)):
                 if not self._backchannel_ready:
                     self._backchannel_ready = True
-                    _LOGGER.info("[%s] go2rtc: обратный канал ISAPI на месте ('%s')", self.name, name)
+                    _LOGGER.debug("[%s] go2rtc: обратный канал ISAPI на месте ('%s')", self.name, name)
                 continue
             # PUT задаёт ИМЕННО этот набор источников (заменяет). Поэтому шлём
             # rtsp ПЕРВЫМ и isapi вторым: видео сохраняется, добавляется
