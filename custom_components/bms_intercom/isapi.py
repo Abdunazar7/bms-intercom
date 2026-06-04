@@ -9,6 +9,7 @@ Uses HTTP digest auth (the panel's default). All endpoints follow the panel's
 public ISAPI spec for video-intercom devices; verify against your firmware if a
 call differs (debug logging prints the exact request/response).
 """
+
 from __future__ import annotations
 
 import logging
@@ -55,25 +56,37 @@ class ISAPIClient:
     ) -> None:
         self._base = f"http://{host}:{http_port}"
         self._door_no = door_no
-        # verify=False keeps client creation off the event loop's blocking path
-        # (no certifi load) — we only ever talk plain HTTP to the panel anyway.
-        self._client = httpx.AsyncClient(
-            auth=httpx.DigestAuth(username, password),
-            timeout=timeout,
-            verify=False,
-        )
+        self._timeout = timeout
+        # Store credentials so we can build a fresh DigestAuth per request.
+        # Some Hikvision firmwares mishandle digest when the connection /
+        # auth object is reused across requests, which leads to spurious 401s.
+        self._username = username
+        self._password = password
+        # verify=False avoids loading certifi's CA bundle (a blocking file
+        # read) inside the event loop — we only ever talk plain HTTP to the
+        # panel, so TLS verification is irrelevant here anyway.
+        self._client = httpx.AsyncClient(timeout=timeout, verify=False)
 
     async def async_close(self) -> None:
         await self._client.aclose()
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         url = f"{self._base}{path}"
+        # Build a fresh digest auth for every request.
+        auth = httpx.DigestAuth(self._username, self._password)
         try:
-            resp = await self._client.request(method, url, **kwargs)
-            _LOGGER.debug("ISAPI %s %s -> %s", method, path, resp.status_code)
+            resp = await self._client.request(method, url, auth=auth, **kwargs)
+            _LOGGER.debug(
+                "ISAPI %s %s -> %s | body: %s",
+                method,
+                path,
+                resp.status_code,
+                resp.text[:200],
+            )
             resp.raise_for_status()
             return resp
         except httpx.HTTPError as err:
+            _LOGGER.debug("ISAPI %s %s FAILED: %s", method, path, err)
             raise ISAPIError(f"{method} {path}: {err}") from err
 
     async def async_verify(self) -> None:
@@ -82,9 +95,7 @@ class ISAPIClient:
 
     async def async_get_call_status(self) -> str:
         """Return one of STATUS_IDLE / STATUS_RINGING / STATUS_ANSWERED."""
-        resp = await self._request(
-            "GET", "/ISAPI/VideoIntercom/callStatus?format=json"
-        )
+        resp = await self._request("GET", "/ISAPI/VideoIntercom/callStatus?format=json")
         try:
             raw = resp.json().get("CallStatus", {}).get("status", "idle")
         except ValueError:
