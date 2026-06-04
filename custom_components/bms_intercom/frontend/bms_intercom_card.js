@@ -325,24 +325,26 @@
     const haStream = !!customElements.get("ha-camera-stream");
 
     if (canStream && haStream) {
-      if (videoKind !== "ha" || videoCam !== cam) {
+      // Переиспользуем ОДИН элемент ha-camera-stream между вызовами. Если его
+      // каждый раз пересоздавать, go2rtc не успевает закрыть прошлую WebRTC-
+      // сессию и новая не стартует — приходилось перезагружать страницу.
+      if (videoKind !== "ha" || !videoEl) {
         clearVideo();
         const el = document.createElement("ha-camera-stream");
-        el.hass = hass;
-        el.stateObj = st;
         el.controls = false;
         // Всегда стартуем без звука: иначе браузер блокирует autoplay и видео
         // остаётся чёрным. Звук панели включается тапом по видео / кнопкой.
         el.muted = true;
-        slot.appendChild(el);
         videoEl = el;
         videoKind = "ha";
-        videoCam = cam;
         console.info("%cBMS Intercom: видео через ha-camera-stream (%s)", LOG, cam);
-      } else {
-        videoEl.hass = hass;
-        videoEl.stateObj = st;
       }
+      if (!videoEl.isConnected) slot.appendChild(videoEl);
+      videoEl.hass = hass;
+      videoEl.muted = true;
+      // stateObj задаём всегда — это (пере)запускает поток на новый вызов.
+      videoEl.stateObj = st;
+      videoCam = cam;
       updateSoundHint();
     } else if (st) {
       // Демо / панель без потока / нет ha-camera-stream → MJPEG-кадр.
@@ -611,7 +613,14 @@
     audio.pause();
     stopMic();
     stopTalkback();
-    clearVideo();
+    // Не уничтожаем ha-camera-stream — гасим поток, сняв stateObj, но элемент
+    // оставляем для переиспользования на следующий вызов (иначе требовалась
+    // перезагрузка страницы). MJPEG-вариант чистим как раньше.
+    if (videoKind === "ha" && videoEl) {
+      try { videoEl.stateObj = undefined; } catch (e) { /* ignore */ }
+    } else {
+      clearVideo();
+    }
     const micBtn = overlay.querySelector(".bms-mic");
     if (micBtn) { micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
     activeId = null;

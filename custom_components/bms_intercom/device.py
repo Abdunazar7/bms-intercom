@@ -67,8 +67,9 @@ class BMSIntercomDevice:
         self.available: bool = True
         self._client: ISAPIClient | None = None
         self._unsub_poll = None
-        self._backchannel_ready = False   # ISAPI-источник уже в go2rtc
-        self._backchannel_warned = False  # чтобы не спамить, если go2rtc нет
+        self._backchannel_ready = False        # ISAPI-источник уже в go2rtc
+        self._backchannel_warned = False       # чтобы не спамить, если go2rtc нет
+        self._backchannel_unsupported = False  # go2rtc без isapi-модуля
 
     @property
     def is_demo(self) -> bool:
@@ -182,6 +183,8 @@ class BMSIntercomDevice:
         that already have it. Re-runs each poll so it survives go2rtc/HA
         re-registering the stream.
         """
+        if self._backchannel_unsupported:
+            return  # этот go2rtc не умеет isapi-источник — больше не пытаемся
         cfg = self.hass.data.get("go2rtc")
         if cfg is None:
             if not self._backchannel_warned:
@@ -255,6 +258,18 @@ class BMSIntercomDevice:
                         )
                     else:
                         body = await resp.text()
+                        if resp.status == 400 and "not supported" in body.lower():
+                            # В этом go2rtc нет isapi-модуля → двусторонний звук
+                            # через go2rtc невозможен. Сообщаем один раз и больше
+                            # не дёргаем API.
+                            self._backchannel_unsupported = True
+                            _LOGGER.warning(
+                                "[%s] go2rtc не поддерживает источник isapi:// "
+                                "(%s). Двусторонний звук через go2rtc недоступен "
+                                "на этой сборке go2rtc. Видео и входящий звук "
+                                "работают.", self.name, body.strip()[:120],
+                            )
+                            return
                         _LOGGER.warning(
                             "[%s] go2rtc: PUT '%s' вернул HTTP %s: %s",
                             self.name, name, resp.status, body[:200],
