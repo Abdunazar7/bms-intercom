@@ -50,6 +50,12 @@ STATE_ANSWERED = "answered"
 # popup must stay until the operator hangs up (or this safety timeout).
 MAX_TALK_SECONDS = 180
 
+# Once the panel starts ringing, keep the popup open for at least this long,
+# even if the panel drops the call almost immediately (e.g. no internet → it
+# can't reach Hik-Connect and gives up in a second). Gives the operator time
+# to actually see and answer the call locally.
+RING_WINDOW_SECONDS = 25
+
 # Panel call-status string -> internal call state.
 _ISAPI_STATUS_TO_STATE = {
     STATUS_RINGING: STATE_RINGING,
@@ -80,6 +86,7 @@ class BMSIntercomDevice:
         self._go2rtc_probed = False            # версию go2rtc уже залогировали
         self._answered = False                 # оператор ответил (латч разговора)
         self._answered_at = 0.0                # время ответа (для тайм-аута)
+        self._ringing_at = 0.0                 # время начала звонка (окно звонка)
 
     @property
     def is_demo(self) -> bool:
@@ -182,6 +189,21 @@ class BMSIntercomDevice:
             self._answered = False
 
         new_state = _ISAPI_STATUS_TO_STATE.get(raw, STATE_IDLE)
+
+        # Окно звонка: запоминаем момент начала звонка и держим окно открытым
+        # ещё RING_WINDOW_SECONDS, даже если панель почти сразу бросает вызов
+        # (нет интернета → не достучалась до Hik-Connect). Чтобы оператор успел
+        # увидеть и ответить.
+        if new_state == STATE_RINGING and self.call_state != STATE_RINGING:
+            self._ringing_at = self.hass.loop.time()
+        if (
+            self.call_state == STATE_RINGING
+            and new_state == STATE_IDLE
+            and self.hass.loop.time() - self._ringing_at <= RING_WINDOW_SECONDS
+        ):
+            await self._async_ensure_backchannel()
+            return  # держим RINGING ещё немного, чтобы можно было ответить
+
         if new_state != self.call_state:
             _LOGGER.debug("[%s] Статус вызова: %s -> %s", self.name, self.call_state, new_state)
             self.call_state = new_state
