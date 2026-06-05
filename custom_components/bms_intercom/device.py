@@ -43,6 +43,13 @@ STATE_IDLE = "idle"
 STATE_RINGING = "ringing"
 STATE_ANSWERED = "answered"
 
+# After the operator answers we keep the conversation open locally for up to
+# this long, regardless of the panel's callStatus. A villa door station drops
+# its "call" quickly (it rings indoor units / Hik-Connect, not HA), but the
+# two-way audio/video runs through go2rtc and is independent of that — so the
+# popup must stay until the operator hangs up (or this safety timeout).
+MAX_TALK_SECONDS = 180
+
 # Panel call-status string -> internal call state.
 _ISAPI_STATUS_TO_STATE = {
     STATUS_RINGING: STATE_RINGING,
@@ -71,6 +78,8 @@ class BMSIntercomDevice:
         self._backchannel_warned = False       # чтобы не спамить, если go2rtc нет
         self._backchannel_unsupported = False  # go2rtc без isapi-модуля
         self._go2rtc_probed = False            # версию go2rtc уже залогировали
+        self._answered = False                 # оператор ответил (латч разговора)
+        self._answered_at = 0.0                # время ответа (для тайм-аута)
 
     @property
     def is_demo(self) -> bool:
@@ -161,6 +170,16 @@ class BMSIntercomDevice:
             _LOGGER.info("[%s] Связь с панелью восстановлена", self.name)
             self.available = True
             self._notify()
+
+        # Латч разговора: пока оператор «в разговоре», держим ANSWERED и не
+        # даём опросу сбросить его в idle (панель-вилла быстро рапортует idle,
+        # хотя звук/видео идут через go2rtc). Выход — «Сбросить» или тайм-аут.
+        if self._answered:
+            if self.hass.loop.time() - self._answered_at <= MAX_TALK_SECONDS:
+                await self._async_ensure_backchannel()
+                return
+            _LOGGER.debug("[%s] Разговор завершён по тайм-ауту", self.name)
+            self._answered = False
 
         new_state = _ISAPI_STATUS_TO_STATE.get(raw, STATE_IDLE)
         if new_state != self.call_state:
@@ -307,6 +326,10 @@ class BMSIntercomDevice:
             except ISAPIError as err:
                 _LOGGER.error("[%s] Не удалось ответить: %s", self.name, err)
                 return
+        # Включаем латч разговора: дальше опрос не сбросит окно в idle, пока
+        # оператор не нажмёт «Сбросить» (или не истечёт MAX_TALK_SECONDS).
+        self._answered = True
+        self._answered_at = self.hass.loop.time()
         self.call_state = STATE_ANSWERED
         self._notify()
 
@@ -337,6 +360,7 @@ class BMSIntercomDevice:
                 except ISAPIError as err2:
                     _LOGGER.error("[%s] Не удалось завершить вызов: %s", self.name, err2)
                     return
+        self._answered = False  # снимаем латч разговора
         self.call_state = STATE_IDLE
         self._notify()
 
