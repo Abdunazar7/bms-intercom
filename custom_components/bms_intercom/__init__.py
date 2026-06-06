@@ -38,6 +38,7 @@ def _device_from_msg(hass: HomeAssistant, msg) -> BMSIntercomDevice | None:
 @websocket_api.async_response
 async def _ws_talk_start(hass, connection, msg) -> None:
     device = _device_from_msg(hass, msg)
+    _LOGGER.info("BMS Intercom: WS talk_start (entry=%s, найден=%s)", msg.get("entry_id"), device is not None)
     if device is not None:
         await device.async_talk_start()
     connection.send_result(msg["id"])

@@ -84,6 +84,8 @@ class BMSIntercomDevice:
         self._client: ISAPIClient | None = None
         self._unsub_poll = None
         self._talk: TwoWayAudioSession | None = None  # активная отправка микрофона
+        self._talk_bytes = 0
+        self._talk_logged_at = 0
         self._backchannel_ready = False        # ISAPI-источник уже в go2rtc
         self._backchannel_warned = False       # чтобы не спамить, если go2rtc нет
         self._backchannel_unsupported = False  # go2rtc без isapi-модуля
@@ -363,7 +365,9 @@ class BMSIntercomDevice:
             await sess.async_close()
             return
         self._talk = sess
-        _LOGGER.debug("[%s] Микрофон к панели открыт (кодек %s)", self.name, sess.codec)
+        self._talk_bytes = 0
+        self._talk_logged_at = 0
+        _LOGGER.info("[%s] Микрофон к панели открыт (кодек %s)", self.name, sess.codec)
 
     async def async_talk_send(self, data: bytes) -> None:
         """Forward a chunk of G.711 mic audio to the panel."""
@@ -372,8 +376,14 @@ class BMSIntercomDevice:
         try:
             await self._talk.async_send(data)
         except TwoWayAudioError as err:
-            _LOGGER.debug("[%s] Микрофон: поток оборвался (%s)", self.name, err)
+            _LOGGER.warning("[%s] Микрофон: поток к панели оборвался (%s)", self.name, err)
             await self.async_talk_stop()
+            return
+        # Раз в ~2 секунды отметим, что звук реально уходит на панель.
+        self._talk_bytes += len(data)
+        if self._talk_bytes - self._talk_logged_at >= 16000:
+            self._talk_logged_at = self._talk_bytes
+            _LOGGER.info("[%s] Микрофон → панель: отправлено %d Б", self.name, self._talk_bytes)
 
     async def async_talk_stop(self) -> None:
         """Close the panel's two-way audio channel."""

@@ -343,10 +343,14 @@
     for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
     return btoa(s);
   }
+  let _talkLogged = false, _talkErrLogged = false;
   function sendTalkData(u8) {
     const hass = getHass();
     if (!hass || !activeId || !u8.length) return;
-    hass.connection.sendMessagePromise({ type: "bms_intercom/talk_data", entry_id: activeId, data: b64(u8) }).catch(() => {});
+    if (!_talkLogged) { _talkLogged = true; console.info("%cBMS Intercom: микрофон → панель пошёл (%d Б/чанк)", LOG, u8.length); }
+    hass.connection
+      .sendMessagePromise({ type: "bms_intercom/talk_data", entry_id: activeId, data: b64(u8) })
+      .catch((e) => { if (!_talkErrLogged) { _talkErrLogged = true; console.warn("BMS Intercom: talk_data ошибка", e); } });
   }
 
   function updateMicBtn() {
@@ -368,16 +372,20 @@
     const hass = getHass();
     if (!hass || !activeId) { micOn = false; updateMicBtn(); return false; }
     if (micStream) { micOn = true; updateMicBtn(); return true; }
+    _talkLogged = false; _talkErrLogged = false;
+    console.info("%cBMS Intercom: запуск микрофона…", LOG);
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch (e) {
+      console.warn("BMS Intercom: getUserMedia отклонён", e);
       if (!silent) showToast("Доступ к микрофону отклонён в браузере.");
       micOn = false; updateMicBtn(); return false;
     }
-    try { await hass.connection.sendMessagePromise({ type: "bms_intercom/talk_start", entry_id: activeId }); }
-    catch (e) { console.warn("BMS Intercom: talk_start", e); }
+    console.info("%cBMS Intercom: микрофон захвачен, открываю канал к панели…", LOG);
+    try { await hass.connection.sendMessagePromise({ type: "bms_intercom/talk_start", entry_id: activeId }); console.info("%cBMS Intercom: talk_start OK", LOG); }
+    catch (e) { console.warn("BMS Intercom: talk_start ошибка", e); }
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       micCtx = new AC();
