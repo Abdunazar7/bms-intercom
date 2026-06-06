@@ -121,10 +121,11 @@
         .bms-btn .ic { width: 54px; height: 54px; border-radius: 50%; display: flex; align-items: center;
           justify-content: center; font-size: 27px; line-height: 1; background: rgba(255,255,255,.13); }
         .bms-answer { background: #1f9e57; }
-        .bms-reject { background: #d23b2c; }
+        .bms-answer .ic { background: rgba(255,255,255,.2); }
+        .bms-reject { background: #e2483a; }
+        .bms-reject .ic { background: rgba(255,255,255,.2); transform: rotate(135deg); }
         .bms-door   { background: #2f6fed; }
-        .bms-mic.on { background: #c9a227; }
-        .bms-sound.off { background: #5a3b3b; }
+        .bms-mic.off { background: #c0392b; }
         .bms-hidden { display: none !important; }
         .bms-toast { position: absolute; left: 50%; bottom: 124px; transform: translateX(-50%);
           max-width: 86%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660;
@@ -148,9 +149,8 @@
         <div class="bms-actions">
           <button class="bms-btn bms-answer"><span class="ic">📞</span>Ответить</button>
           <button class="bms-btn bms-mic bms-hidden"><span class="ic">🎙️</span>Микрофон</button>
-          <button class="bms-btn bms-sound bms-hidden"><span class="ic">🔊</span>Звук</button>
           <button class="bms-btn bms-door"><span class="ic">🚪</span>Открыть</button>
-          <button class="bms-btn bms-reject"><span class="ic">📵</span>Сбросить</button>
+          <button class="bms-btn bms-reject"><span class="ic">📞</span>Сбросить</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -164,21 +164,12 @@
     overlay.querySelector(".bms-reject").addEventListener("click", () => callRole("reject"));
     overlay.querySelector(".bms-door").addEventListener("click", () => callRole("open_door"));
     overlay.querySelector(".bms-mic").addEventListener("click", toggleMic);
-    // Кнопка «Звук» — включить/выключить звук панели (микрофон домофона).
-    overlay.querySelector(".bms-sound").addEventListener("click", () => {
-      const v = videoElem();
-      setMuted(v ? !v.muted : false);
-    });
-    // Autoplay со звуком браузер блокирует, поэтому видео стартует без звука,
-    // а звук панели включаем при первом же взаимодействии пользователя.
+    // Звук панели (микрофон домофона) не отключается — он всегда включён после
+    // ответа. Autoplay со звуком браузер блокирует, поэтому видео стартует без
+    // звука, а звук включаем при первом взаимодействии (на всякий случай).
     overlay.querySelector(".bms-video").addEventListener("click", () => setMuted(false));
     overlay.querySelector(".bms-sound-hint").addEventListener("click", (e) => { e.stopPropagation(); setMuted(false); });
-    overlay.addEventListener("pointerdown", (e) => {
-      if (ringingNow) return;
-      // Не трогаем при нажатии на «Звук» — иначе его выключение не сработает.
-      if (e.target && e.target.closest && e.target.closest(".bms-sound")) return;
-      setMuted(false);
-    }, true);
+    overlay.addEventListener("pointerdown", () => { if (!ringingNow) setMuted(false); }, true);
   }
 
   function currentGroup() {
@@ -193,7 +184,11 @@
     if (!hass || !g) return;
     const entity = g.roles[role];
     if (entity) hass.callService("button", "press", { entity_id: entity });
-    if (role === "answer") setMuted(false); // жест: сразу включаем звук панели
+    if (role === "answer") {
+      // Как телефон: ответили → слышим панель и сразу говорим (микрофон вкл).
+      setMuted(false);   // звук панели (его выключить нельзя — всегда вкл)
+      startMic(true);    // микрофон оператора включён по умолчанию (тихо)
+    }
   }
 
   function showToast(msg, link) {
@@ -267,17 +262,12 @@
     if (!overlay) return;
     const v = videoElem();
     const muted = !v || v.muted;
-    // Подсказка над видео — только в разговоре, пока звук выключен.
+    // Подсказка над видео — только в разговоре, пока звук панели почему-то
+    // выключен (например, ответили не из попапа). Звук панели не отключается.
     const hint = overlay.querySelector(".bms-sound-hint");
     if (hint) {
       const show = videoMode === "webrtc" && v && !!v.srcObject && !ringingNow && muted;
       hint.classList.toggle("bms-hidden", !show);
-    }
-    // Кнопка «Звук» отражает текущее состояние.
-    const sound = overlay.querySelector(".bms-sound");
-    if (sound) {
-      sound.classList.toggle("off", muted);
-      sound.querySelector(".ic").textContent = muted ? "🔇" : "🔊";
     }
   }
 
@@ -419,47 +409,70 @@
     if (v) { v.srcObject = null; v.muted = true; }
   }
 
+  function micAudioTrack() {
+    return micStream ? micStream.getAudioTracks()[0] : null;
+  }
+
+  function updateMicBtn() {
+    const btn = overlay && overlay.querySelector(".bms-mic");
+    if (!btn) return;
+    btn.classList.toggle("off", !micOn); // off = микрофон выключен (красный)
+    const ic = btn.querySelector(".ic");
+    if (ic) ic.textContent = micOn ? "🎙️" : "🔇";
+  }
+
+  // Включить микрофон оператора (по умолчанию он включён после ответа).
+  // silent=true — авто-запуск при ответе (без всплывающих сообщений);
+  // обычный вызов (кнопка) — с подсказками.
+  async function startMic(silent) {
+    if (!window.isSecureContext || !navigator.mediaDevices) {
+      if (!silent) {
+        const su = secureUrl();
+        if (su) showToast("Микрофон работает только по HTTPS. Откройте защищённую версию:", su);
+        else showToast("Микрофон работает только по HTTPS (или localhost).");
+      }
+      micOn = false; updateMicBtn();
+      return false;
+    }
+    if (!audioSender) { micOn = false; updateMicBtn(); return false; }
+    if (!micStream) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (e) {
+        if (!silent) showToast("Доступ к микрофону отклонён в браузере.");
+        micOn = false; updateMicBtn();
+        return false;
+      }
+      try {
+        await audioSender.replaceTrack(micAudioTrack());
+      } catch (e) {
+        console.warn("BMS Intercom: replaceTrack(mic)", e);
+      }
+    }
+    const track = micAudioTrack();
+    if (track) track.enabled = true;
+    micOn = !!track;
+    updateMicBtn();
+    return micOn;
+  }
+
+  // Кнопка микрофона: вкл ↔ выкл (без переподключения — мгновенно через
+  // track.enabled). При первом нажатии (если ещё не запущен) — запрашиваем доступ.
+  async function toggleMic() {
+    if (!micStream) { await startMic(); return; }
+    const track = micAudioTrack();
+    micOn = !micOn;
+    if (track) track.enabled = micOn;
+    updateMicBtn();
+  }
+
   function stopMic() {
     if (micStream) {
       micStream.getTracks().forEach((tr) => tr.stop());
       micStream = null;
     }
+    if (audioSender) { try { audioSender.replaceTrack(null); } catch (e) { /* ignore */ } }
     micOn = false;
-  }
-
-  async function toggleMic() {
-    const btn = overlay.querySelector(".bms-mic");
-    if (!window.isSecureContext || !navigator.mediaDevices) {
-      const su = secureUrl();
-      if (su) showToast("Микрофон работает только по HTTPS. Откройте защищённую версию:", su);
-      else showToast("Микрофон работает только по HTTPS (или localhost). Включите HTTPS для Home Assistant — тогда здесь появится кнопка перехода.");
-      return;
-    }
-    if (!micOn) {
-      if (!audioSender) { showToast("Звуковой канал ещё не готов. Нажмите «Ответить» и попробуйте снова."); return; }
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (e) {
-        showToast("Доступ к микрофону отклонён в браузере.");
-        return;
-      }
-      const track = micStream.getAudioTracks()[0];
-      try {
-        await audioSender.replaceTrack(track);
-      } catch (e) {
-        console.warn("BMS Intercom: replaceTrack(mic)", e);
-        showToast("Не удалось подключить микрофон к разговору.");
-        stopMic();
-        return;
-      }
-      micOn = true;
-      setMuted(false); // заодно включаем звук панели
-    } else {
-      if (audioSender) { try { await audioSender.replaceTrack(null); } catch (e) { /* ignore */ } }
-      stopMic();
-    }
-    btn.classList.toggle("on", micOn);
-    btn.querySelector(".ic").textContent = "🎙️"; // иконка постоянна, цвет показывает вкл/выкл
   }
 
   function showVideo(hass, cam, st, ringing) {
@@ -501,10 +514,10 @@
 
     const micBtn = overlay.querySelector(".bms-mic");
     micBtn.classList.toggle("bms-hidden", ringing);
-    micBtn.title = window.isSecureContext ? "Микрофон (push-to-talk)" : "Микрофон доступен только по HTTPS";
-    if (ringing) { stopMic(); micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
-    // Кнопка «Звук» — как и микрофон, появляется в разговоре.
-    overlay.querySelector(".bms-sound").classList.toggle("bms-hidden", ringing);
+    micBtn.title = window.isSecureContext ? "Микрофон (вкл/выкл)" : "Микрофон доступен только по HTTPS";
+    if (ringing) stopMic();
+    updateMicBtn();
+    // Во время звонка — «Ответить»; в разговоре — «Микрофон».
     overlay.querySelector(".bms-answer").classList.toggle("bms-hidden", !ringing);
 
     const st = cam && hass.states[cam];
