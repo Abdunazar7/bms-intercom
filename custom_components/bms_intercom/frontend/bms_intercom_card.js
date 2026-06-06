@@ -1,28 +1,16 @@
 /*
  * BMS Intercom — встроенный поп-ап вызывной панели.
  *
- * Загружается интеграцией автоматически на все дашборды. Следит за состоянием
- * домофонов и при входящем вызове показывает полноэкранное окно с видео,
- * звуком звонка и кнопками Ответить / Сбросить / Открыть дверь.
+ * Центрированное окно размером с видео. Поверх видео — шапка (имя домофона из
+ * сущности + статус), таймер/«входящий вызов», кнопки и дата-время. Три режима:
+ *   ringing — входящий вызов: Сбросить · Ответить · Открыть
+ *   talk    — разговор: Сбросить · Открыть · Микрофон (микрофон оператора вкл
+ *             по умолчанию; звук панели всегда включён, не отключается)
+ *   idle    — просмотр без вызова (по переключателю «Просмотр»): Открыть · Звук
+ *             (звук панели выключен по умолчанию). Закрытие — крестик/фон.
  *
- * Видео + звук: реальная панель показывается через ОДНО собственное
- * WebRTC-соединение к камере (camera/webrtc/offer Home Assistant → go2rtc).
- * Одно соединение делает сразу всё:
- *   - видео (recvonly),
- *   - входящий звук панели (приходит в том же соединении),
- *   - микрофон оператора (talk-back) — добавляется в ту же аудиодорожку.
- * Так мы полностью контролируем mute/звук и чисто закрываем соединение в
- * конце каждого вызова (pc.close) — поэтому следующий вызов работает без
- * перезагрузки страницы.
- *
- * Talk-back (микрофон → панель) доходит, только если go2rtc умеет обратный
- * канал Hikvision (модуль isapi). Если нет — видео и входящий звук работают.
- *
- * В демо-режиме (без железа) камера отдаёт нарисованный MJPEG-поток — для него
- * используется простой <img>.
- *
- * Ничего настраивать в дашборде не нужно — модуль находит сущности по
- * атрибутам intercom_id / intercom_role, которые проставляет интеграция.
+ * Видео и звук идут через одно WebRTC-соединение к камере (camera/webrtc/offer
+ * Home Assistant → go2rtc). Микрофон оператора добавляется в ту же дорожку.
  */
 (function () {
   "use strict";
@@ -30,34 +18,48 @@
   const STATIC = "/bms_intercom_static";
   const POLL_MS = 400;
   const FEATURE_STREAM = 2; // CameraEntityFeature.STREAM
+  const AUTO_END_MS = 5000; // авто-завершение вызова после «Открыть»
   const LOG = "color:#2f6fed;font-weight:600";
 
-  let overlay = null;
-  let audio = null;
-  let activeId = null; // intercom_id, для которого сейчас открыт поп-ап
-  let micOn = false;
-  let micStream = null; // активный поток микрофона оператора (если разрешён)
-  let lastSig = null;  // подпись текущего состояния, чтобы не перерисовывать зря
-  let ringingNow = false; // звонит ли сейчас (для подсказки про звук)
-  let autoEndTimer = null; // авто-завершение вызова после открытия двери
+  // --- SVG-иконки (24x24, currentColor) ----------------------------------
+  const ICONS = {
+    building: "M12,7V3H2v18h20V7H12z M6,19H4v-2h2V19z M6,15H4v-2h2V15z M6,11H4V9h2V11z M6,7H4V5h2V7z M10,19H8v-2h2V19z M10,15H8v-2h2V15z M10,11H8V9h2V11z M10,7H8V5h2V7z M20,19h-8v-2h2v-2h-2v-2h2v-2h-2V9h8V19z M18,11h-2v2h2V11z M18,15h-2v2h2V15z",
+    phone: "M6.62,10.79c1.44,2.83 3.76,5.14 6.59,6.59l2.2-2.2c0.27-0.27 0.67-0.36 1.02-0.24 1.12,0.37 2.33,0.57 3.57,0.57 0.55,0 1,0.45 1,1V20c0,0.55-0.45,1-1,1C10.61,21 3,13.39 3,4c0-0.55 0.45-1 1-1h3.5c0.55,0 1,0.45 1,1 0,1.25 0.2,2.45 0.57,3.57 0.11,0.35 0.03,0.74-0.25,1.02L6.62,10.79z",
+    hangup: "M12,9c-1.6,0-3.15,0.25-4.6,0.72v3.1c0,0.39-0.23,0.74-0.56,0.9-0.98,0.49-1.87,1.12-2.66,1.85-0.18,0.18-0.43,0.29-0.71,0.29-0.28,0-0.53-0.11-0.71-0.29L0.29,13.08C0.11,12.9 0,12.65 0,12.38c0-0.28 0.11-0.53 0.29-0.71C3.34,8.78 7.46,7 12,7s8.66,1.78 11.71,4.67c0.18,0.18 0.29,0.43 0.29,0.71 0,0.27-0.11,0.52-0.29,0.7l-2.48,2.48c-0.18,0.18-0.43,0.29-0.71,0.29-0.27,0-0.52-0.11-0.7-0.29-0.79-0.73-1.69-1.36-2.67-1.85-0.33-0.16-0.56-0.5-0.56-0.9v-3.1C15.15,9.25 13.6,9 12,9z",
+    lock: "M12,17c1.1,0 2-0.9 2-2s-0.9-2-2-2-2,0.9-2,2 0.9,2 2,2z M18,8c1.1,0 2,0.9 2,2v10c0,1.1-0.9,2-2,2H6c-1.1,0-2-0.9-2-2V10c0-1.1 0.9-2 2-2h1V6c0-2.76 2.24-5 5-5s5,2.24 5,5v2H18z M12,3c-1.66,0-3,1.34-3,3v2h6V6c0-1.66-1.34-3-3-3z",
+    mic: "M12,2c1.66,0 3,1.34 3,3v6c0,1.66-1.34,3-3,3s-3-1.34-3-3V5c0-1.66 1.34-3 3-3z M19,11c0,3.53-2.61,6.44-6,6.93V21h-2v-3.07C7.61,17.44 5,14.53 5,11h2c0,2.76 2.24,5 5,5s5-2.24 5-5H19z",
+    micOff: "M19,11c0,1.19-0.34,2.3-0.9,3.28l-1.23-1.23C17.14,12.43 17.3,11.74 17.3,11H19z M15,11.16L9,5.18V5c0-1.66 1.34-3 3-3s3,1.34 3,3V11.16z M4.27,3 21,19.73 19.73,21l-4.19-4.19c-0.77,0.46-1.63,0.77-2.54,0.91V21h-2v-3.28C7.72,17.23 5,14.41 5,11h1.7c0,3 2.54,5.1 5.3,5.1 0.81,0 1.6-0.19 2.31-0.52l-1.66-1.66L12,14c-1.66,0-3-1.34-3-3v-0.72L3,4.27 4.27,3z",
+    volume: "M14,3.23v2.06c2.89,0.86 5,3.54 5,6.71s-2.11,5.85-5,6.71v2.06c4-0.91 7-4.49 7-8.77S18,4.14 14,3.23z M16.5,12c0-1.77-1-3.29-2.5-4.03v8.06c1.5-0.74 2.5-2.26 2.5-4.03z M3,9v6h4l5,5V4L7,9H3z",
+    volumeOff: "M12,4 9.91,6.09 12,8.18V4z M4.27,3 3,4.27 7.73,9H3v6h4l5,5v-6.73l4.25,4.25c-0.67,0.51-1.42,0.93-2.25,1.17v2.06c1.38-0.31 2.63-0.95 3.68-1.81L19.73,21 21,19.73 12,10.73 4.27,3z M19,12c0,0.94-0.2,1.82-0.54,2.64l1.51,1.51C20.62,14.91 21,13.5 21,12c0-4.28-3-7.86-7-8.77v2.06c2.89,0.86 5,3.54 5,6.71z",
+    bell: "M12,2c0.55,0 1,0.45 1,1v0.29c2.89,0.86 5,3.54 5,6.71v6l3,3v1H3v-1l3-3v-6c0-3.17 2.11-5.85 5-6.71V3c0-0.55 0.45-1 1-1z M14,20c0,1.1-0.9,2-2,2s-2-0.9-2-2H14z",
+    camera: "M4,4h3l2-2h6l2,2h3c1.1,0 2,0.9 2,2v12c0,1.1-0.9,2-2,2H4c-1.1,0-2-0.9-2-2V6c0-1.1 0.9-2 2-2z M12,7c-2.76,0-5,2.24-5,5s2.24,5 5,5 5-2.24 5-5-2.24-5-5-5z M12,9c1.66,0 3,1.34 3,3s-1.34,3-3,3-3-1.34-3-3 1.34-3 3-3z",
+    close: "M19,6.41 17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12 19,6.41z",
+  };
+  function svg(name) {
+    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${ICONS[name]}"/></svg>`;
+  }
 
-  // --- Состояние WebRTC (видео + входящий звук + микрофон) ----------------
-  let pc = null;             // RTCPeerConnection
-  let audioSender = null;    // RTCRtpSender аудио (для talk-back через replaceTrack)
-  let remoteStream = null;   // MediaStream от панели (видео+звук)
-  let wrUnsub = null;        // функция отписки от camera/webrtc/offer
-  let wrSession = null;      // session_id, выданный Home Assistant
-  let wrCam = null;          // entity_id камеры текущего соединения
-  let wrPending = [];        // ICE-кандидаты до получения session_id
-  let wrToken = 0;           // защита от гонок между teardown и start
-  let videoMode = null;      // 'webrtc' | 'mjpeg' — что сейчас показываем
+  let overlay = null;
+  let card = null;
+  let audio = null;
+  let activeId = null;
+  let currentMode = null; // 'ringing' | 'talk' | 'idle'
+  let micOn = false;
+  let micStream = null;
+  let lastSig = null;
+  let talkStart = 0;       // время начала разговора (для таймера)
+  let autoEndTimer = null; // авто-завершение после «Открыть»
+
+  // --- WebRTC ------------------------------------------------------------
+  let pc = null, audioSender = null, remoteStream = null;
+  let wrUnsub = null, wrSession = null, wrCam = null, wrPending = [], wrToken = 0;
+  let videoMode = null; // 'webrtc' | 'mjpeg'
 
   function getHass() {
     const el = document.querySelector("home-assistant");
     return el && el.hass ? el.hass : null;
   }
 
-  // Сгруппировать сущности всех домофонов по intercom_id.
   function groupIntercoms(hass) {
     const groups = {};
     if (!hass || !hass.states) return groups;
@@ -72,6 +74,7 @@
       if (a.intercom_role === "call") {
         g.callState = a.call_state || (st.state === "on" ? "ringing" : "idle");
       }
+      if (a.intercom_role === "view") g.viewOn = st.state === "on";
     }
     return groups;
   }
@@ -81,80 +84,106 @@
     overlay.id = "bms-intercom-overlay";
     overlay.innerHTML = `
       <style>
-        #bms-intercom-overlay { position: fixed; inset: 0; z-index: 999999;
-          background: rgba(6,8,14,.94); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-          display: none; align-items: center; justify-content: center;
+        #bms-intercom-overlay { position: fixed; inset: 0; z-index: 999999; display: none;
+          align-items: center; justify-content: center; background: rgba(6,8,14,.82);
+          -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
           font-family: var(--paper-font-body1_-_font-family, "Segoe UI", Roboto, system-ui, sans-serif); }
         #bms-intercom-overlay.show { display: flex; }
-        .bms-card { position: relative; width: 100vw; height: 100vh; height: 100dvh;
-          display: flex; flex-direction: column;
-          background: linear-gradient(180deg, #1c2333 0%, #141823 100%);
-          overflow: hidden; animation: bmsin .22s ease; }
-        @keyframes bmsin { from { opacity: 0; } to { opacity: 1; } }
-        .bms-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 16px 22px; }
-        .bms-brand { display: flex; align-items: center; gap: 12px; color: #eef2f8; }
-        .bms-logo { width: 32px; height: 32px; display: block; flex: none; border-radius: 9px; }
-        .bms-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
-        .bms-badge { font-size: 11.5px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
-          padding: 6px 13px 6px 11px; border-radius: 999px; display: flex; align-items: center; gap: 7px; }
-        .bms-badge::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-        .bms-badge.ring { background: rgba(224,60,60,.16); color: #ff6b6b; animation: bmsblink 1.1s steps(2) infinite; }
-        .bms-badge.talk { background: rgba(38,180,110,.16); color: #3ddc8a; }
-        @keyframes bmsblink { 50% { opacity: .4; } }
-        .bms-video-wrap { position: relative; flex: 1 1 auto; min-height: 0; margin: 0;
-          background: #000; display: flex; align-items: center; justify-content: center; }
-        .bms-video { width: 100%; height: 100%; aspect-ratio: auto; background: #000;
-          object-fit: contain; display: block; }
-        .bms-sound-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
-          background: rgba(0,0,0,.58); color: #fff; padding: 8px 16px; border-radius: 999px; font-size: 13px;
-          font-weight: 600; cursor: pointer; z-index: 2; display: flex; align-items: center; gap: 7px;
-          -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
-          box-shadow: 0 4px 16px rgba(0,0,0,.5); }
-        .bms-actions { flex: none; display: flex; gap: 12px; padding: 16px;
-          width: 100%; max-width: 820px; margin: 0 auto; box-sizing: border-box;
-          padding-bottom: max(16px, env(safe-area-inset-bottom)); }
-        .bms-btn { flex: 1 1 0; min-width: 70px; border: none; border-radius: 20px; padding: 16px 8px 14px;
-          font-size: 14px; font-weight: 600; color: #fff; cursor: pointer; display: flex; flex-direction: column;
-          align-items: center; gap: 9px; background: #2b3346;
-          transition: transform .07s ease, filter .15s ease, background .15s ease; }
-        .bms-btn:hover { filter: brightness(1.12); }
-        .bms-btn:active { transform: scale(.94); }
-        .bms-btn .ic { width: 54px; height: 54px; border-radius: 50%; display: flex; align-items: center;
-          justify-content: center; font-size: 27px; line-height: 1; background: rgba(255,255,255,.13); }
-        .bms-answer { background: #1f9e57; }
-        .bms-answer .ic { background: rgba(255,255,255,.2); }
-        .bms-reject { background: #e2483a; }
-        .bms-reject .ic { background: rgba(255,255,255,.2); transform: rotate(135deg); }
-        .bms-door   { background: #2f6fed; }
-        .bms-mic.off { background: #c0392b; }
+        .bms-card { position: relative; width: min(94vw, 820px); aspect-ratio: 4/3; max-height: 92vh;
+          border-radius: 20px; overflow: hidden; background: #0c0f16;
+          box-shadow: 0 30px 90px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.05);
+          animation: bmsin .24s ease; }
+        @keyframes bmsin { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+        .bms-video, .bms-video-img { position: absolute; inset: 0; width: 100%; height: 100%;
+          object-fit: cover; background: transparent; display: block; }
+        .bms-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #2c3444; }
+        .bms-ph svg { width: 72px; height: 72px; }
+        .bms-top { position: absolute; top: 0; left: 0; right: 0; z-index: 3; display: flex;
+          align-items: center; justify-content: space-between; padding: 14px 16px 26px;
+          background: linear-gradient(180deg, rgba(6,8,14,.82) 0%, rgba(6,8,14,0) 100%); color: #eef2f8; }
+        .bms-brand { display: flex; align-items: center; gap: 10px; }
+        .bms-bi { width: 30px; height: 30px; border-radius: 8px; background: rgba(255,255,255,.12);
+          display: flex; align-items: center; justify-content: center; }
+        .bms-bi svg { width: 18px; height: 18px; color: #cdd6e6; }
+        .bms-title { font-size: 17px; font-weight: 700; }
+        .bms-right { display: flex; align-items: center; gap: 12px; }
+        .bms-status { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700;
+          letter-spacing: .5px; text-transform: uppercase; }
+        .bms-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+        .bms-status.ring { color: #ff6b6b; }
+        .bms-status.talk { color: #3ddc8a; }
+        .bms-status.idle { color: #3ddc8a; }
+        .bms-x { width: 30px; height: 30px; border: none; border-radius: 50%; cursor: pointer;
+          background: rgba(255,255,255,.14); color: #fff; display: flex; align-items: center; justify-content: center; }
+        .bms-x svg { width: 18px; height: 18px; }
+        .bms-pill { position: absolute; top: 50px; left: 16px; z-index: 3; display: flex; align-items: center;
+          gap: 8px; padding: 7px 13px; border-radius: 999px; font-size: 14px; font-weight: 700; color: #eef2f8;
+          background: rgba(18,24,36,.72); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+        .bms-pill svg { width: 16px; height: 16px; }
+        .bms-pill.ring { color: #ff8a8a; animation: bmsblink 1.1s steps(2) infinite; }
+        .bms-pill.talk { color: #3ddc8a; }
+        @keyframes bmsblink { 50% { opacity: .45; } }
+        .bms-bottom { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 30px 18px 18px;
+          background: linear-gradient(0deg, rgba(6,8,14,.9) 0%, rgba(6,8,14,0) 100%);
+          display: flex; justify-content: center; }
+        .bms-actions { display: flex; gap: 28px; align-items: flex-start; }
+        .bms-btn { border: none; background: none; cursor: pointer; color: #eef2f8; display: flex;
+          flex-direction: column; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
+        .bms-btn .ic { width: 58px; height: 58px; border-radius: 50%; background: #3a4254; display: flex;
+          align-items: center; justify-content: center; transition: transform .07s, filter .15s; }
+        .bms-btn .ic svg { width: 26px; height: 26px; color: #fff; }
+        .bms-btn:hover .ic { filter: brightness(1.13); }
+        .bms-btn:active .ic { transform: scale(.92); }
+        .bms-answer .ic { background: #1fb866; }
+        .bms-reject .ic { background: #ef4d3d; }
+        .bms-door .ic { background: #2f7bf6; }
+        .bms-mic.off .ic { background: #c0392b; }
+        .bms-datetime { position: absolute; right: 16px; bottom: 14px; z-index: 2; color: #aeb8c8;
+          font-size: 13px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+        .bms-cam { position: absolute; left: 16px; bottom: 14px; z-index: 2; display: flex; align-items: center;
+          gap: 7px; color: #cdd6e6; font-size: 13px; }
+        .bms-cam::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #3ddc8a; }
+        /* видимость по режимам */
+        .bms-only-ring, .bms-only-talk, .bms-only-idle, .bms-only-call { display: none; }
+        .bms-card[data-mode="ringing"] .bms-only-ring,
+        .bms-card[data-mode="ringing"] .bms-only-call,
+        .bms-card[data-mode="talk"] .bms-only-talk,
+        .bms-card[data-mode="talk"] .bms-only-call,
+        .bms-card[data-mode="idle"] .bms-only-idle { display: flex; }
+        .bms-card[data-mode="idle"] .bms-actions { width: 100%; justify-content: space-between; padding: 0 9%; }
         .bms-hidden { display: none !important; }
-        .bms-toast { position: absolute; left: 50%; bottom: 124px; transform: translateX(-50%);
-          max-width: 86%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660;
-          border-radius: 14px; padding: 11px 16px; font-size: 14px; line-height: 1.35; text-align: center;
+        .bms-toast { position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%); z-index: 5;
+          max-width: 86%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660; border-radius: 14px;
+          padding: 11px 16px; font-size: 14px; line-height: 1.35; text-align: center;
           box-shadow: 0 8px 26px rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .2s; }
         .bms-toast.show { opacity: 1; }
       </style>
-      <div class="bms-card">
-        <div class="bms-head">
-          <span class="bms-brand">
-            <img class="bms-logo" src="${STATIC}/logo.svg" alt="BMS Intercom" />
-            <span class="bms-title">Домофон</span>
+      <div class="bms-card" data-mode="ringing">
+        <div class="bms-ph">${svg("camera")}</div>
+        <video class="bms-video" autoplay playsinline muted></video>
+        <img class="bms-video-img bms-hidden" alt="видео с панели" />
+        <div class="bms-top">
+          <span class="bms-brand"><span class="bms-bi">${svg("building")}</span><span class="bms-title">Домофон</span></span>
+          <span class="bms-right">
+            <span class="bms-status ring"><span class="bms-status-text">Входящий вызов</span></span>
+            <button class="bms-x bms-only-idle" title="Закрыть">${svg("close")}</button>
           </span>
-          <span class="bms-badge ring">ВХОДЯЩИЙ ВЫЗОВ</span>
         </div>
-        <div class="bms-video-wrap">
-          <video class="bms-video" autoplay playsinline muted></video>
-          <img class="bms-video bms-video-img bms-hidden" alt="видео с панели" />
-          <div class="bms-sound-hint bms-hidden"><span>🔇</span>Нажмите, чтобы слышать панель</div>
+        <div class="bms-pill ring bms-only-call"><span class="bms-pill-ic">${svg("bell")}</span><span class="bms-pill-text">Входящий вызов</span></div>
+        <div class="bms-cam bms-only-idle">Камера активна</div>
+        <div class="bms-bottom">
+          <div class="bms-actions">
+            <button class="bms-btn bms-reject bms-only-call"><span class="ic">${svg("hangup")}</span>Сбросить</button>
+            <button class="bms-btn bms-answer bms-only-ring"><span class="ic">${svg("phone")}</span>Ответить</button>
+            <button class="bms-btn bms-door"><span class="ic">${svg("lock")}</span>Открыть</button>
+            <button class="bms-btn bms-mic bms-only-talk"><span class="ic">${svg("mic")}</span>Микрофон</button>
+            <button class="bms-btn bms-sound bms-only-idle"><span class="ic">${svg("volume")}</span>Звук</button>
+          </div>
         </div>
-        <div class="bms-actions">
-          <button class="bms-btn bms-answer"><span class="ic">📞</span>Ответить</button>
-          <button class="bms-btn bms-mic bms-hidden"><span class="ic">🎙️</span>Микрофон</button>
-          <button class="bms-btn bms-door"><span class="ic">🚪</span>Открыть</button>
-          <button class="bms-btn bms-reject"><span class="ic">📞</span>Сбросить</button>
-        </div>
+        <div class="bms-datetime"></div>
       </div>`;
     document.body.appendChild(overlay);
+    card = overlay.querySelector(".bms-card");
 
     audio = document.createElement("audio");
     audio.loop = true;
@@ -165,18 +194,23 @@
     overlay.querySelector(".bms-reject").addEventListener("click", () => callRole("reject"));
     overlay.querySelector(".bms-door").addEventListener("click", () => callRole("open_door"));
     overlay.querySelector(".bms-mic").addEventListener("click", toggleMic);
-    // Звук панели (микрофон домофона) не отключается — он всегда включён после
-    // ответа. Autoplay со звуком браузер блокирует, поэтому видео стартует без
-    // звука, а звук включаем при первом взаимодействии (на всякий случай).
-    overlay.querySelector(".bms-video").addEventListener("click", () => setMuted(false));
-    overlay.querySelector(".bms-sound-hint").addEventListener("click", (e) => { e.stopPropagation(); setMuted(false); });
-    overlay.addEventListener("pointerdown", () => { if (!ringingNow) setMuted(false); }, true);
+    overlay.querySelector(".bms-sound").addEventListener("click", () => setMuted(!isMuted()));
+    overlay.querySelector(".bms-x").addEventListener("click", closeIdle);
+    overlay.querySelector(".bms-video").addEventListener("click", () => { if (currentMode !== "idle") setMuted(false); });
+    // Клик по затемнённому фону закрывает только idle-просмотр.
+    overlay.addEventListener("click", (e) => { if (e.target === overlay && currentMode === "idle") closeIdle(); });
   }
 
   function currentGroup() {
     const hass = getHass();
     if (!hass || !activeId) return null;
     return groupIntercoms(hass)[activeId] || null;
+  }
+
+  function closeIdle() {
+    const hass = getHass();
+    const g = currentGroup();
+    if (hass && g && g.roles.view) hass.callService("switch", "turn_off", { entity_id: g.roles.view });
   }
 
   function callRole(role) {
@@ -186,14 +220,19 @@
     const entity = g.roles[role];
     if (entity) hass.callService("button", "press", { entity_id: entity });
     if (role === "answer") {
-      // Как телефон: ответили → слышим панель и сразу говорим (микрофон вкл).
-      setMuted(false);   // звук панели (его выключить нельзя — всегда вкл)
+      setMuted(false);   // звук панели всегда включён в разговоре
       startMic(true);    // микрофон оператора включён по умолчанию (тихо)
     } else if (role === "open_door") {
-      // Открыли дверь — авто-завершаем вызов через 5 секунд.
-      clearAutoEnd();
-      showToast("Дверь открыта. Вызов завершится через 5 секунд.");
-      autoEndTimer = setTimeout(() => { autoEndTimer = null; callRole("reject"); }, 5000);
+      // Открытие двери имеет смысл «завершить звонок» только если идёт вызов.
+      if (currentMode === "ringing" || currentMode === "talk") {
+        clearAutoEnd();
+        // Чтобы панель не звонила «впустую» (звук «не ответили») — примем вызов,
+        // затем завершим как «Сбросить» через несколько секунд.
+        if (currentMode === "ringing" && g.roles.answer) {
+          hass.callService("button", "press", { entity_id: g.roles.answer });
+        }
+        autoEndTimer = setTimeout(() => { autoEndTimer = null; callRole("reject"); }, AUTO_END_MS);
+      }
     } else if (role === "reject") {
       clearAutoEnd();
     }
@@ -206,110 +245,113 @@
   function showToast(msg, link) {
     if (!overlay) return;
     let t = overlay.querySelector(".bms-toast");
-    if (!t) {
-      t = document.createElement("div");
-      t.className = "bms-toast";
-      overlay.querySelector(".bms-card").appendChild(t);
-    }
+    if (!t) { t = document.createElement("div"); t.className = "bms-toast"; card.appendChild(t); }
     t.textContent = msg;
     if (link) {
       const a = document.createElement("a");
-      a.href = link;
-      a.textContent = "Открыть по HTTPS";
+      a.href = link; a.textContent = "Открыть по HTTPS";
       a.style.cssText = "display:inline-block;margin-top:8px;color:#7db1ff;font-weight:700;text-decoration:none;";
-      t.appendChild(document.createElement("br"));
-      t.appendChild(a);
+      t.appendChild(document.createElement("br")); t.appendChild(a);
     }
     t.classList.add("show");
     clearTimeout(t._hide);
     t._hide = setTimeout(() => t.classList.remove("show"), link ? 12000 : 5000);
   }
 
-  // Если HA знает свой HTTPS-адрес (cloud/external/internal), вернём ссылку на ту же страницу по HTTPS.
   function secureUrl() {
     const hass = getHass();
     const cfg = (hass && hass.config) || {};
     const g = currentGroup();
     const tail = location.pathname + location.search + location.hash;
-    if (g && g.httpsBase && g.httpsBase.indexOf("https://") === 0) {
-      return g.httpsBase.replace(/\/+$/, "") + tail;
-    }
-    if (g && g.httpsPort && location.hostname) {
-      return "https://" + location.hostname + ":" + g.httpsPort + tail;
-    }
+    if (g && g.httpsBase && g.httpsBase.indexOf("https://") === 0) return g.httpsBase.replace(/\/+$/, "") + tail;
+    if (g && g.httpsPort && location.hostname) return "https://" + location.hostname + ":" + g.httpsPort + tail;
     for (const base of [cfg.external_url, cfg.internal_url]) {
-      if (base && base.indexOf("https://") === 0) {
-        return base.replace(/\/+$/, "") + tail;
-      }
+      if (base && base.indexOf("https://") === 0) return base.replace(/\/+$/, "") + tail;
     }
     return null;
   }
 
-  // --- Звук видео ---------------------------------------------------------
-  function videoElem() {
-    return overlay && overlay.querySelector("video.bms-video");
-  }
+  // --- Звук панели --------------------------------------------------------
+  function videoElem() { return overlay && overlay.querySelector("video.bms-video"); }
+  function isMuted() { const v = videoElem(); return !v || v.muted; }
 
-  // Принудительно включить/выключить звук панели (вызывается по жесту).
   function setMuted(muted) {
     const v = videoElem();
     if (!v) return;
     v.muted = muted;
     if (!muted) v.play().catch(() => {});
-    updateSoundHint();
+    updateSoundBtn();
   }
 
-  // Попытаться включить звук без явного жеста (после ответа). Если браузер
-  // блокирует — тихо остаёмся без звука, видео продолжает идти.
   function attemptUnmute() {
     const v = videoElem();
     if (!v) return;
     v.muted = false;
-    Promise.resolve(v.play())
-      .then(() => updateSoundHint())
-      .catch(() => { v.muted = true; v.play().catch(() => {}); updateSoundHint(); });
+    Promise.resolve(v.play()).then(() => updateSoundBtn())
+      .catch(() => { v.muted = true; v.play().catch(() => {}); updateSoundBtn(); });
   }
 
-  function updateSoundHint() {
-    if (!overlay) return;
-    const v = videoElem();
-    const muted = !v || v.muted;
-    // Подсказка над видео — только в разговоре, пока звук панели почему-то
-    // выключен (например, ответили не из попапа). Звук панели не отключается.
-    const hint = overlay.querySelector(".bms-sound-hint");
-    if (hint) {
-      const show = videoMode === "webrtc" && v && !!v.srcObject && !ringingNow && muted;
-      hint.classList.toggle("bms-hidden", !show);
+  function updateSoundBtn() {
+    const btn = overlay && overlay.querySelector(".bms-sound");
+    if (!btn) return;
+    const muted = isMuted();
+    btn.querySelector(".ic").innerHTML = svg(muted ? "volumeOff" : "volume");
+  }
+
+  // --- Микрофон оператора -------------------------------------------------
+  function micAudioTrack() { return micStream ? micStream.getAudioTracks()[0] : null; }
+
+  function updateMicBtn() {
+    const btn = overlay && overlay.querySelector(".bms-mic");
+    if (!btn) return;
+    btn.classList.toggle("off", !micOn);
+    btn.querySelector(".ic").innerHTML = svg(micOn ? "mic" : "micOff");
+  }
+
+  async function startMic(silent) {
+    if (!window.isSecureContext || !navigator.mediaDevices) {
+      if (!silent) {
+        const su = secureUrl();
+        if (su) showToast("Микрофон работает только по HTTPS. Откройте защищённую версию:", su);
+        else showToast("Микрофон работает только по HTTPS (или localhost).");
+      }
+      micOn = false; updateMicBtn(); return false;
     }
+    if (!audioSender) { micOn = false; updateMicBtn(); return false; }
+    if (!micStream) {
+      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch (e) { if (!silent) showToast("Доступ к микрофону отклонён в браузере."); micOn = false; updateMicBtn(); return false; }
+      try { await audioSender.replaceTrack(micAudioTrack()); } catch (e) { console.warn("replaceTrack(mic)", e); }
+    }
+    const track = micAudioTrack();
+    if (track) track.enabled = true;
+    micOn = !!track; updateMicBtn(); return micOn;
+  }
+
+  async function toggleMic() {
+    if (!micStream) { await startMic(); return; }
+    const track = micAudioTrack();
+    micOn = !micOn;
+    if (track) track.enabled = micOn;
+    updateMicBtn();
+  }
+
+  function stopMic() {
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (audioSender) { try { audioSender.replaceTrack(null); } catch (e) {} }
+    micOn = false;
   }
 
   // --- WebRTC -------------------------------------------------------------
   function preferG711(transceiver) {
-    // Hikvision two-way audio работает на G.711 (PCMU/PCMA 8кГц). Просим браузер
-    // отдавать микрофон в G.711, чтобы go2rtc мог передать звук панели как есть.
     try {
-      const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities
-        ? RTCRtpSender.getCapabilities("audio") : null;
+      const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities ? RTCRtpSender.getCapabilities("audio") : null;
       if (caps && transceiver.setCodecPreferences) {
         const g711 = (c) => /pcmu|pcma|g722/i.test(c.mimeType);
-        const pref = caps.codecs.filter(g711);
-        const rest = caps.codecs.filter((c) => !g711(c));
+        const pref = caps.codecs.filter(g711), rest = caps.codecs.filter((c) => !g711(c));
         if (pref.length) transceiver.setCodecPreferences([...pref, ...rest]);
       }
-    } catch (e) { /* setCodecPreferences не поддержан — не критично */ }
-  }
-
-  function audioDirection(sdp) {
-    if (!sdp) return null;
-    let inAudio = false, dir = null;
-    for (const line of sdp.split(/\r?\n/)) {
-      if (line.startsWith("m=")) inAudio = line.startsWith("m=audio");
-      else if (inAudio && line.startsWith("a=")) {
-        const a = line.slice(2).trim();
-        if (a === "sendrecv" || a === "recvonly" || a === "sendonly" || a === "inactive") dir = a;
-      }
-    }
-    return dir;
+    } catch (e) { /* ignore */ }
   }
 
   function sendCandidate(cam, candidate) {
@@ -319,24 +361,17 @@
     const c = { candidate: candidate.candidate || "" };
     if (candidate.sdpMid != null) c.sdpMid = candidate.sdpMid;
     if (candidate.sdpMLineIndex != null) c.sdpMLineIndex = candidate.sdpMLineIndex;
-    hass.connection
-      .sendMessagePromise({ type: "camera/webrtc/candidate", entity_id: cam, session_id: wrSession, candidate: c })
-      .catch(() => {});
+    hass.connection.sendMessagePromise({ type: "camera/webrtc/candidate", entity_id: cam, session_id: wrSession, candidate: c }).catch(() => {});
   }
 
   function handleSignal(msg) {
     if (!pc || !msg) return;
     if (msg.type === "session") {
       wrSession = msg.session_id;
-      const queued = wrPending;
-      wrPending = [];
+      const queued = wrPending; wrPending = [];
       for (const c of queued) sendCandidate(wrCam, c);
     } else if (msg.type === "answer") {
-      const dir = audioDirection(msg.answer);
-      const ok = dir === "recvonly" || dir === "sendrecv";
-      console.info("%cBMS Intercom: ответ панели — talk-back %s (%s)", LOG, ok ? "ЕСТЬ ✅" : "НЕТ ❌", dir || "?");
-      pc.setRemoteDescription({ type: "answer", sdp: msg.answer }).catch((e) =>
-        console.warn("BMS Intercom: setRemoteDescription", e));
+      pc.setRemoteDescription({ type: "answer", sdp: msg.answer }).catch((e) => console.warn("setRemoteDescription", e));
     } else if (msg.type === "candidate") {
       let cand = msg.candidate;
       if (typeof cand === "string") cand = { candidate: cand };
@@ -351,9 +386,7 @@
     if (!hass || !cam || !hass.connection) return;
     stopWebrtc();
     const myToken = ++wrToken;
-    wrCam = cam;
-    wrSession = null;
-    wrPending = [];
+    wrCam = cam; wrSession = null; wrPending = [];
     remoteStream = new MediaStream();
     const v = videoElem();
     if (v) { v.srcObject = remoteStream; v.muted = true; }
@@ -363,7 +396,7 @@
       const cfg = await hass.connection.sendMessagePromise({ type: "camera/webrtc/get_client_config", entity_id: cam });
       const servers = cfg && cfg.configuration && cfg.configuration.iceServers;
       if (Array.isArray(servers)) iceServers = servers;
-    } catch (e) { /* старый HA без этой команды — host-кандидатов на LAN хватает */ }
+    } catch (e) { /* ignore */ }
     if (myToken !== wrToken) return;
 
     pc = new RTCPeerConnection({ iceServers });
@@ -373,20 +406,12 @@
     preferG711(at);
 
     pc.ontrack = (ev) => {
-      // go2rtc иногда не заполняет ev.streams — собираем дорожки сами.
-      if (remoteStream && !remoteStream.getTracks().includes(ev.track)) {
-        remoteStream.addTrack(ev.track);
-      }
+      if (remoteStream && !remoteStream.getTracks().includes(ev.track)) remoteStream.addTrack(ev.track);
       const vv = videoElem();
-      if (vv) {
-        if (vv.srcObject !== remoteStream) vv.srcObject = remoteStream;
-        vv.play().catch(() => {});
-      }
+      if (vv) { if (vv.srcObject !== remoteStream) vv.srcObject = remoteStream; vv.play().catch(() => {}); }
     };
     pc.onicecandidate = (ev) => { if (ev.candidate) sendCandidate(cam, ev.candidate); };
-    pc.onconnectionstatechange = () => {
-      if (pc) console.info("%cBMS Intercom: WebRTC %s", LOG, pc.connectionState);
-    };
+    pc.onconnectionstatechange = () => { if (pc) console.info("%cBMS Intercom: WebRTC %s", LOG, pc.connectionState); };
 
     try {
       const offer = await pc.createOffer();
@@ -396,112 +421,31 @@
         (m) => { if (myToken === wrToken) handleSignal(m); },
         { type: "camera/webrtc/offer", entity_id: cam, offer: pc.localDescription.sdp }
       );
-      console.info("%cBMS Intercom: видео+звук через WebRTC (%s)", LOG, cam);
-    } catch (e) {
-      console.warn("BMS Intercom: WebRTC offer не прошёл", e);
-    }
+    } catch (e) { console.warn("BMS Intercom: WebRTC offer не прошёл", e); }
   }
 
   function stopWebrtc() {
     wrToken++;
-    if (wrUnsub) {
-      try { const r = wrUnsub(); if (r && typeof r.catch === "function") r.catch(() => {}); } catch (e) { /* ignore */ }
-      wrUnsub = null;
-    }
-    if (pc) {
-      try { pc.ontrack = null; pc.onicecandidate = null; pc.onconnectionstatechange = null; pc.close(); } catch (e) { /* ignore */ }
-      pc = null;
-    }
-    audioSender = null;
-    wrSession = null;
-    wrCam = null;
-    wrPending = [];
+    if (wrUnsub) { try { const r = wrUnsub(); if (r && r.catch) r.catch(() => {}); } catch (e) {} wrUnsub = null; }
+    if (pc) { try { pc.ontrack = null; pc.onicecandidate = null; pc.onconnectionstatechange = null; pc.close(); } catch (e) {} pc = null; }
+    audioSender = null; wrSession = null; wrCam = null; wrPending = [];
     if (remoteStream) { remoteStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); remoteStream = null; }
     const v = videoElem();
     if (v) { v.srcObject = null; v.muted = true; }
   }
 
-  function micAudioTrack() {
-    return micStream ? micStream.getAudioTracks()[0] : null;
-  }
-
-  function updateMicBtn() {
-    const btn = overlay && overlay.querySelector(".bms-mic");
-    if (!btn) return;
-    btn.classList.toggle("off", !micOn); // off = микрофон выключен (красный)
-    const ic = btn.querySelector(".ic");
-    if (ic) ic.textContent = micOn ? "🎙️" : "🔇";
-  }
-
-  // Включить микрофон оператора (по умолчанию он включён после ответа).
-  // silent=true — авто-запуск при ответе (без всплывающих сообщений);
-  // обычный вызов (кнопка) — с подсказками.
-  async function startMic(silent) {
-    if (!window.isSecureContext || !navigator.mediaDevices) {
-      if (!silent) {
-        const su = secureUrl();
-        if (su) showToast("Микрофон работает только по HTTPS. Откройте защищённую версию:", su);
-        else showToast("Микрофон работает только по HTTPS (или localhost).");
-      }
-      micOn = false; updateMicBtn();
-      return false;
-    }
-    if (!audioSender) { micOn = false; updateMicBtn(); return false; }
-    if (!micStream) {
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (e) {
-        if (!silent) showToast("Доступ к микрофону отклонён в браузере.");
-        micOn = false; updateMicBtn();
-        return false;
-      }
-      try {
-        await audioSender.replaceTrack(micAudioTrack());
-      } catch (e) {
-        console.warn("BMS Intercom: replaceTrack(mic)", e);
-      }
-    }
-    const track = micAudioTrack();
-    if (track) track.enabled = true;
-    micOn = !!track;
-    updateMicBtn();
-    return micOn;
-  }
-
-  // Кнопка микрофона: вкл ↔ выкл (без переподключения — мгновенно через
-  // track.enabled). При первом нажатии (если ещё не запущен) — запрашиваем доступ.
-  async function toggleMic() {
-    if (!micStream) { await startMic(); return; }
-    const track = micAudioTrack();
-    micOn = !micOn;
-    if (track) track.enabled = micOn;
-    updateMicBtn();
-  }
-
-  function stopMic() {
-    if (micStream) {
-      micStream.getTracks().forEach((tr) => tr.stop());
-      micStream = null;
-    }
-    if (audioSender) { try { audioSender.replaceTrack(null); } catch (e) { /* ignore */ } }
-    micOn = false;
-  }
-
-  function showVideo(hass, cam, st, ringing) {
+  // --- Видео --------------------------------------------------------------
+  function showVideo(hass, cam, st, mode) {
     const vid = videoElem();
     const img = overlay.querySelector("img.bms-video-img");
     const canStream = st && ((st.attributes.supported_features || 0) & FEATURE_STREAM);
-
     if (canStream) {
       videoMode = "webrtc";
-      img.classList.add("bms-hidden");
-      img.src = "";
+      img.classList.add("bms-hidden"); img.src = "";
       vid.classList.remove("bms-hidden");
       if (wrCam !== cam || !pc) startWebrtc(cam);
-      // Во время звонка — без звука (играет рингтон). После ответа пробуем
-      // включить звук панели (если уже был жест — сразу, иначе по первому тапу).
-      if (ringing) setMuted(true);
-      else attemptUnmute();
+      // ringing — рингтон, idle — звук панели выкл по умолчанию; talk — звук вкл.
+      if (mode === "talk") attemptUnmute(); else setMuted(true);
     } else if (st) {
       videoMode = "mjpeg";
       stopWebrtc();
@@ -513,31 +457,42 @@
     }
   }
 
-  function showFor(id, group) {
+  function applyStage(id, group, mode) {
     const hass = getHass();
     const cam = group.roles.camera;
-    const ringing = group.callState === "ringing";
-    ringingNow = ringing;
+    currentMode = mode;
 
+    card.dataset.mode = mode;
     overlay.querySelector(".bms-title").textContent = group.name;
-    const badge = overlay.querySelector(".bms-badge");
-    badge.textContent = ringing ? "ВХОДЯЩИЙ ВЫЗОВ" : "РАЗГОВОР";
-    badge.className = "bms-badge " + (ringing ? "ring" : "talk");
 
-    const micBtn = overlay.querySelector(".bms-mic");
-    micBtn.classList.toggle("bms-hidden", ringing);
-    micBtn.title = window.isSecureContext ? "Микрофон (вкл/выкл)" : "Микрофон доступен только по HTTPS";
-    if (ringing) stopMic();
+    const status = overlay.querySelector(".bms-status");
+    status.className = "bms-status " + mode;
+    overlay.querySelector(".bms-status-text").textContent =
+      mode === "ringing" ? "Входящий вызов" : mode === "talk" ? "Разговор" : "Онлайн";
+
+    // Таблетка слева: входящий / таймер разговора.
+    const pill = overlay.querySelector(".bms-pill");
+    if (mode === "ringing") {
+      pill.className = "bms-pill ring bms-only-call";
+      pill.querySelector(".bms-pill-ic").innerHTML = svg("bell");
+      pill.querySelector(".bms-pill-text").textContent = "Входящий вызов";
+    } else if (mode === "talk") {
+      pill.className = "bms-pill talk bms-only-call";
+      pill.querySelector(".bms-pill-ic").innerHTML = svg("phone");
+      if (!talkStart) talkStart = nowMs();
+    }
+    if (mode !== "talk") talkStart = 0;
+
+    if (mode === "ringing") stopMic();
     updateMicBtn();
-    // Во время звонка — «Ответить»; в разговоре — «Микрофон».
-    overlay.querySelector(".bms-answer").classList.toggle("bms-hidden", !ringing);
+    updateSoundBtn();
 
     const st = cam && hass.states[cam];
-    if (st) showVideo(hass, cam, st, ringing);
+    if (st) showVideo(hass, cam, st, mode);
 
     overlay.classList.add("show");
-    if (ringing) { audio.play().catch(() => {}); }
-    else { audio.pause(); }
+    if (mode === "ringing") audio.play().catch(() => {}); else audio.pause();
+    updateClock();
     activeId = id;
   }
 
@@ -551,10 +506,26 @@
     const img = overlay.querySelector("img.bms-video-img");
     if (img) { img.src = ""; img.dataset.src = ""; }
     videoMode = null;
-    updateMicBtn();
-    updateSoundHint();
+    talkStart = 0;
+    currentMode = null;
     activeId = null;
     lastSig = null;
+  }
+
+  // --- Часы/таймер --------------------------------------------------------
+  function nowMs() { return new Date().getTime(); }
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function updateClock() {
+    if (!overlay || !overlay.classList.contains("show")) return;
+    const d = new Date();
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const dt = overlay.querySelector(".bms-datetime");
+    if (dt) dt.textContent = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${days[d.getDay()]} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    if (currentMode === "talk" && talkStart) {
+      const s = Math.max(0, Math.floor((nowMs() - talkStart) / 1000));
+      const t = overlay.querySelector(".bms-pill-text");
+      if (t) t.textContent = `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+    }
   }
 
   function tick() {
@@ -563,31 +534,35 @@
     if (!overlay) buildOverlay();
 
     const groups = groupIntercoms(hass);
-    let pick = null;
+    // 1) активный вызов (ringing приоритетнее answered)
+    let pick = null, pickMode = null;
     for (const [id, g] of Object.entries(groups)) {
-      if (g.callState === "ringing") { pick = [id, g]; break; }
-      if (g.callState === "answered" && !pick) pick = [id, g];
+      if (g.callState === "ringing") { pick = [id, g]; pickMode = "ringing"; break; }
+      if (g.callState === "answered" && !pick) { pick = [id, g]; pickMode = "talk"; }
     }
+    // 2) иначе — открытый просмотр (idle)
     if (!pick) {
-      if (lastSig !== null) hide();
-      return;
+      for (const [id, g] of Object.entries(groups)) {
+        if (g.viewOn) { pick = [id, g]; pickMode = "idle"; break; }
+      }
     }
-    const sig = `${pick[0]}:${pick[1].callState}`;
+    if (!pick) { if (lastSig !== null) hide(); return; }
+
+    const sig = `${pickMode}:${pick[0]}`;
     if (sig === lastSig) return;
     lastSig = sig;
-    showFor(pick[0], pick[1]);
+    applyStage(pick[0], pick[1], pickMode);
   }
 
   setInterval(tick, POLL_MS);
+  setInterval(updateClock, 1000);
 
   class BmsIntercomCard extends HTMLElement {
     setConfig() {}
     set hass(_) {}
     getCardSize() { return 0; }
   }
-  if (!customElements.get("bms-intercom-card")) {
-    customElements.define("bms-intercom-card", BmsIntercomCard);
-  }
+  if (!customElements.get("bms-intercom-card")) customElements.define("bms-intercom-card", BmsIntercomCard);
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: "bms-intercom-card",

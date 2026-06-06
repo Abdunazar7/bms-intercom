@@ -77,6 +77,7 @@ class BMSIntercomDevice:
         self.name: str = entry.data.get(CONF_NAME, DEFAULT_NAME)
         self.mode: str = entry.data.get(CONF_MODE, MODE_DEMO)
         self.call_state: str = STATE_IDLE
+        self.view_active: bool = False         # открыт ли idle-просмотр (без вызова)
         self.available: bool = True
         self._client: ISAPIClient | None = None
         self._unsub_poll = None
@@ -332,6 +333,12 @@ class BMSIntercomDevice:
                 _LOGGER.debug("[%s] go2rtc: ошибка PUT: %s", self.name, err)
 
     # --- Actions -----------------------------------------------------------
+    async def async_set_view(self, on: bool) -> None:
+        """Open/close the idle live-preview popup (no call involved)."""
+        if self.view_active != on:
+            self.view_active = on
+            self._notify()
+
     async def async_simulate_call(self) -> None:
         """Demo only: pretend the panel started ringing."""
         _LOGGER.info("[%s] Симуляция входящего вызова", self.name)
