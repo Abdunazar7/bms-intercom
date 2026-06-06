@@ -85,13 +85,12 @@
           display: none; align-items: center; justify-content: center;
           font-family: var(--paper-font-body1_-_font-family, "Segoe UI", Roboto, system-ui, sans-serif); }
         #bms-intercom-overlay.show { display: flex; }
-        .bms-card { position: relative; width: min(94vw, 640px);
+        .bms-card { position: relative; width: 100vw; height: 100vh; height: 100dvh;
+          display: flex; flex-direction: column;
           background: linear-gradient(180deg, #1c2333 0%, #141823 100%);
-          border-radius: 24px; overflow: hidden;
-          box-shadow: 0 28px 80px rgba(0,0,0,.66), 0 0 0 1px rgba(255,255,255,.05);
-          animation: bmsin .26s cubic-bezier(.2,.7,.3,1); }
-        @keyframes bmsin { from { transform: translateY(14px) scale(.97); opacity: 0; } to { transform: none; opacity: 1; } }
-        .bms-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; }
+          overflow: hidden; animation: bmsin .22s ease; }
+        @keyframes bmsin { from { opacity: 0; } to { opacity: 1; } }
+        .bms-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 16px 22px; }
         .bms-brand { display: flex; align-items: center; gap: 12px; color: #eef2f8; }
         .bms-logo { width: 32px; height: 32px; display: block; flex: none; border-radius: 9px; }
         .bms-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
@@ -101,30 +100,33 @@
         .bms-badge.ring { background: rgba(224,60,60,.16); color: #ff6b6b; animation: bmsblink 1.1s steps(2) infinite; }
         .bms-badge.talk { background: rgba(38,180,110,.16); color: #3ddc8a; }
         @keyframes bmsblink { 50% { opacity: .4; } }
-        .bms-video-wrap { position: relative; margin: 0 14px; border-radius: 16px; overflow: hidden;
-          background: #000; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
-        .bms-video { width: 100%; aspect-ratio: 4/3; background: #000; object-fit: cover; display: block; }
+        .bms-video-wrap { position: relative; flex: 1 1 auto; min-height: 0; margin: 0;
+          background: #000; display: flex; align-items: center; justify-content: center; }
+        .bms-video { width: 100%; height: 100%; aspect-ratio: auto; background: #000;
+          object-fit: contain; display: block; }
         .bms-sound-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
           background: rgba(0,0,0,.58); color: #fff; padding: 8px 16px; border-radius: 999px; font-size: 13px;
           font-weight: 600; cursor: pointer; z-index: 2; display: flex; align-items: center; gap: 7px;
           -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
           box-shadow: 0 4px 16px rgba(0,0,0,.5); }
-        .bms-actions { display: flex; gap: 10px; padding: 16px 14px 18px; }
-        .bms-btn { flex: 1 1 0; min-width: 62px; border: none; border-radius: 18px; padding: 13px 6px 11px;
-          font-size: 12.5px; font-weight: 600; color: #fff; cursor: pointer; display: flex; flex-direction: column;
-          align-items: center; gap: 8px; background: #2b3346;
+        .bms-actions { flex: none; display: flex; gap: 12px; padding: 16px;
+          width: 100%; max-width: 820px; margin: 0 auto; box-sizing: border-box;
+          padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+        .bms-btn { flex: 1 1 0; min-width: 70px; border: none; border-radius: 20px; padding: 16px 8px 14px;
+          font-size: 14px; font-weight: 600; color: #fff; cursor: pointer; display: flex; flex-direction: column;
+          align-items: center; gap: 9px; background: #2b3346;
           transition: transform .07s ease, filter .15s ease, background .15s ease; }
         .bms-btn:hover { filter: brightness(1.12); }
         .bms-btn:active { transform: scale(.94); }
-        .bms-btn .ic { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center;
-          justify-content: center; font-size: 22px; line-height: 1; background: rgba(255,255,255,.13); }
+        .bms-btn .ic { width: 54px; height: 54px; border-radius: 50%; display: flex; align-items: center;
+          justify-content: center; font-size: 27px; line-height: 1; background: rgba(255,255,255,.13); }
         .bms-answer { background: #1f9e57; }
         .bms-reject { background: #d23b2c; }
         .bms-door   { background: #2f6fed; }
         .bms-mic.on { background: #c9a227; }
         .bms-sound.off { background: #5a3b3b; }
         .bms-hidden { display: none !important; }
-        .bms-toast { position: absolute; left: 50%; bottom: 104px; transform: translateX(-50%);
+        .bms-toast { position: absolute; left: 50%; bottom: 124px; transform: translateX(-50%);
           max-width: 86%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660;
           border-radius: 14px; padding: 11px 16px; font-size: 14px; line-height: 1.35; text-align: center;
           box-shadow: 0 8px 26px rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .2s; }
