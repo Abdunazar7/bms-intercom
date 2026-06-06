@@ -18,7 +18,8 @@
   const STATIC = "/bms_intercom_static";
   const POLL_MS = 400;
   const FEATURE_STREAM = 2; // CameraEntityFeature.STREAM
-  const AUTO_END_MS = 5000; // авто-завершение вызова после «Открыть»
+  const AUTO_END_RING_MS = 5000;  // «Открыть» во время звонка (без ответа) → 5с
+  const AUTO_END_TALK_MS = 30000; // «Открыть» уже в разговоре → 30с
   const LOG = "color:#2f6fed;font-weight:600";
 
   // --- SVG-иконки (24x24, currentColor) ----------------------------------
@@ -223,15 +224,17 @@
       setMuted(false);   // звук панели всегда включён в разговоре
       startMic(true);    // микрофон оператора включён по умолчанию (тихо)
     } else if (role === "open_door") {
-      // Открытие двери имеет смысл «завершить звонок» только если идёт вызов.
+      // Открытие двери завершает вызов автоматически.
       if (currentMode === "ringing" || currentMode === "talk") {
         clearAutoEnd();
-        // Чтобы панель не звонила «впустую» (звук «не ответили») — примем вызов,
-        // затем завершим как «Сбросить» через несколько секунд.
+        // Открыли во время звонка (не ответив) — старая логика: примем вызов
+        // (чтобы панель не пищала «не ответили») и завершим через 5с.
+        // Открыли уже в разговоре — завершаем через 30с.
+        const delay = currentMode === "talk" ? AUTO_END_TALK_MS : AUTO_END_RING_MS;
         if (currentMode === "ringing" && g.roles.answer) {
           hass.callService("button", "press", { entity_id: g.roles.answer });
         }
-        autoEndTimer = setTimeout(() => { autoEndTimer = null; callRole("reject"); }, AUTO_END_MS);
+        autoEndTimer = setTimeout(() => { autoEndTimer = null; callRole("reject"); }, delay);
       }
     } else if (role === "reject") {
       clearAutoEnd();
