@@ -81,41 +81,53 @@
     overlay.innerHTML = `
       <style>
         #bms-intercom-overlay { position: fixed; inset: 0; z-index: 999999;
-          background: rgba(8,10,16,.92); display: none; align-items: center;
-          justify-content: center; font-family: var(--paper-font-body1_-_font-family, sans-serif); }
+          background: rgba(6,8,14,.94); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+          display: none; align-items: center; justify-content: center;
+          font-family: var(--paper-font-body1_-_font-family, "Segoe UI", Roboto, system-ui, sans-serif); }
         #bms-intercom-overlay.show { display: flex; }
-        .bms-card { position: relative; width: min(92vw, 720px); background: #161a24; border-radius: 18px;
-          overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
-        .bms-head { display: flex; align-items: center; justify-content: space-between;
-          padding: 14px 20px; color: #e6ebf2; font-size: 20px; font-weight: 600; }
-        .bms-brand { display: flex; align-items: center; gap: 12px; }
-        .bms-logo { width: 34px; height: 34px; display: block; flex: none; }
-        .bms-badge { font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 999px; }
-        .bms-badge.ring { background: #c0282890; color: #fff; animation: bmsblink 1s steps(2) infinite; }
-        .bms-badge.talk { background: #1f8a4c; color: #fff; }
-        @keyframes bmsblink { 50% { opacity: .35; } }
-        .bms-video-wrap { position: relative; }
+        .bms-card { position: relative; width: min(94vw, 640px);
+          background: linear-gradient(180deg, #1c2333 0%, #141823 100%);
+          border-radius: 24px; overflow: hidden;
+          box-shadow: 0 28px 80px rgba(0,0,0,.66), 0 0 0 1px rgba(255,255,255,.05);
+          animation: bmsin .26s cubic-bezier(.2,.7,.3,1); }
+        @keyframes bmsin { from { transform: translateY(14px) scale(.97); opacity: 0; } to { transform: none; opacity: 1; } }
+        .bms-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; }
+        .bms-brand { display: flex; align-items: center; gap: 12px; color: #eef2f8; }
+        .bms-logo { width: 32px; height: 32px; display: block; flex: none; border-radius: 9px; }
+        .bms-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
+        .bms-badge { font-size: 11.5px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+          padding: 6px 13px 6px 11px; border-radius: 999px; display: flex; align-items: center; gap: 7px; }
+        .bms-badge::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+        .bms-badge.ring { background: rgba(224,60,60,.16); color: #ff6b6b; animation: bmsblink 1.1s steps(2) infinite; }
+        .bms-badge.talk { background: rgba(38,180,110,.16); color: #3ddc8a; }
+        @keyframes bmsblink { 50% { opacity: .4; } }
+        .bms-video-wrap { position: relative; margin: 0 14px; border-radius: 16px; overflow: hidden;
+          background: #000; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
         .bms-video { width: 100%; aspect-ratio: 4/3; background: #000; object-fit: cover; display: block; }
         .bms-sound-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
-          background: rgba(0,0,0,.62); color: #fff; padding: 7px 16px; border-radius: 999px; font-size: 13px;
-          font-weight: 600; cursor: pointer; z-index: 2; display: flex; align-items: center; gap: 6px;
-          box-shadow: 0 4px 14px rgba(0,0,0,.5); }
-        .bms-actions { display: flex; gap: 12px; padding: 16px 20px 22px; }
-        .bms-btn { flex: 1; border: none; border-radius: 14px; padding: 16px 8px; font-size: 16px;
-          font-weight: 600; color: #fff; cursor: pointer; display: flex; flex-direction: column;
-          align-items: center; gap: 6px; transition: transform .05s, filter .15s; }
-        .bms-btn:active { transform: scale(.96); }
-        .bms-btn .ic { font-size: 26px; line-height: 1; }
-        .bms-answer { background: #1f8a4c; }
-        .bms-reject { background: #c02828; }
+          background: rgba(0,0,0,.58); color: #fff; padding: 8px 16px; border-radius: 999px; font-size: 13px;
+          font-weight: 600; cursor: pointer; z-index: 2; display: flex; align-items: center; gap: 7px;
+          -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+          box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+        .bms-actions { display: flex; gap: 10px; padding: 16px 14px 18px; }
+        .bms-btn { flex: 1 1 0; min-width: 62px; border: none; border-radius: 18px; padding: 13px 6px 11px;
+          font-size: 12.5px; font-weight: 600; color: #fff; cursor: pointer; display: flex; flex-direction: column;
+          align-items: center; gap: 8px; background: #2b3346;
+          transition: transform .07s ease, filter .15s ease, background .15s ease; }
+        .bms-btn:hover { filter: brightness(1.12); }
+        .bms-btn:active { transform: scale(.94); }
+        .bms-btn .ic { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center;
+          justify-content: center; font-size: 22px; line-height: 1; background: rgba(255,255,255,.13); }
+        .bms-answer { background: #1f9e57; }
+        .bms-reject { background: #d23b2c; }
         .bms-door   { background: #2f6fed; }
-        .bms-mic    { background: #46506b; }
         .bms-mic.on { background: #c9a227; }
+        .bms-sound.off { background: #5a3b3b; }
         .bms-hidden { display: none !important; }
-        .bms-toast { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
-          max-width: 88%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660;
-          border-radius: 12px; padding: 10px 16px; font-size: 14px; line-height: 1.35; text-align: center;
-          box-shadow: 0 8px 24px rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .2s; }
+        .bms-toast { position: absolute; left: 50%; bottom: 104px; transform: translateX(-50%);
+          max-width: 86%; background: #20283a; color: #eaf0f8; border: 1px solid #3a4660;
+          border-radius: 14px; padding: 11px 16px; font-size: 14px; line-height: 1.35; text-align: center;
+          box-shadow: 0 8px 26px rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .2s; }
         .bms-toast.show { opacity: 1; }
       </style>
       <div class="bms-card">
@@ -134,6 +146,7 @@
         <div class="bms-actions">
           <button class="bms-btn bms-answer"><span class="ic">📞</span>Ответить</button>
           <button class="bms-btn bms-mic bms-hidden"><span class="ic">🎙️</span>Микрофон</button>
+          <button class="bms-btn bms-sound bms-hidden"><span class="ic">🔊</span>Звук</button>
           <button class="bms-btn bms-door"><span class="ic">🚪</span>Открыть</button>
           <button class="bms-btn bms-reject"><span class="ic">📵</span>Сбросить</button>
         </div>
@@ -149,11 +162,21 @@
     overlay.querySelector(".bms-reject").addEventListener("click", () => callRole("reject"));
     overlay.querySelector(".bms-door").addEventListener("click", () => callRole("open_door"));
     overlay.querySelector(".bms-mic").addEventListener("click", toggleMic);
+    // Кнопка «Звук» — включить/выключить звук панели (микрофон домофона).
+    overlay.querySelector(".bms-sound").addEventListener("click", () => {
+      const v = videoElem();
+      setMuted(v ? !v.muted : false);
+    });
     // Autoplay со звуком браузер блокирует, поэтому видео стартует без звука,
     // а звук панели включаем при первом же взаимодействии пользователя.
     overlay.querySelector(".bms-video").addEventListener("click", () => setMuted(false));
     overlay.querySelector(".bms-sound-hint").addEventListener("click", (e) => { e.stopPropagation(); setMuted(false); });
-    overlay.addEventListener("pointerdown", () => { if (!ringingNow) setMuted(false); }, true);
+    overlay.addEventListener("pointerdown", (e) => {
+      if (ringingNow) return;
+      // Не трогаем при нажатии на «Звук» — иначе его выключение не сработает.
+      if (e.target && e.target.closest && e.target.closest(".bms-sound")) return;
+      setMuted(false);
+    }, true);
   }
 
   function currentGroup() {
@@ -239,11 +262,21 @@
   }
 
   function updateSoundHint() {
-    const hint = overlay && overlay.querySelector(".bms-sound-hint");
-    if (!hint) return;
+    if (!overlay) return;
     const v = videoElem();
-    const show = videoMode === "webrtc" && v && !!v.srcObject && !ringingNow && v.muted;
-    hint.classList.toggle("bms-hidden", !show);
+    const muted = !v || v.muted;
+    // Подсказка над видео — только в разговоре, пока звук выключен.
+    const hint = overlay.querySelector(".bms-sound-hint");
+    if (hint) {
+      const show = videoMode === "webrtc" && v && !!v.srcObject && !ringingNow && muted;
+      hint.classList.toggle("bms-hidden", !show);
+    }
+    // Кнопка «Звук» отражает текущее состояние.
+    const sound = overlay.querySelector(".bms-sound");
+    if (sound) {
+      sound.classList.toggle("off", muted);
+      sound.querySelector(".ic").textContent = muted ? "🔇" : "🔊";
+    }
   }
 
   // --- WebRTC -------------------------------------------------------------
@@ -424,7 +457,7 @@
       stopMic();
     }
     btn.classList.toggle("on", micOn);
-    btn.querySelector(".ic").textContent = micOn ? "🔊" : "🎙️";
+    btn.querySelector(".ic").textContent = "🎙️"; // иконка постоянна, цвет показывает вкл/выкл
   }
 
   function showVideo(hass, cam, st, ringing) {
@@ -468,6 +501,8 @@
     micBtn.classList.toggle("bms-hidden", ringing);
     micBtn.title = window.isSecureContext ? "Микрофон (push-to-talk)" : "Микрофон доступен только по HTTPS";
     if (ringing) { stopMic(); micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
+    // Кнопка «Звук» — как и микрофон, появляется в разговоре.
+    overlay.querySelector(".bms-sound").classList.toggle("bms-hidden", ringing);
     overlay.querySelector(".bms-answer").classList.toggle("bms-hidden", !ringing);
 
     const st = cam && hass.states[cam];
