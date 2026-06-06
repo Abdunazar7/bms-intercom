@@ -47,12 +47,13 @@
   let currentMode = null; // 'ringing' | 'talk' | 'idle'
   let micOn = false;
   let micStream = null;
+  let micCtx = null, micSrc = null, micProc = null; // Web Audio для захвата микрофона
   let lastSig = null;
   let talkStart = 0;       // время начала разговора (для таймера)
   let autoEndTimer = null; // авто-завершение после «Открыть»
 
   // --- WebRTC ------------------------------------------------------------
-  let pc = null, audioSender = null, remoteStream = null;
+  let pc = null, remoteStream = null;
   let wrUnsub = null, wrSession = null, wrCam = null, wrPending = [], wrToken = 0;
   let videoMode = null; // 'webrtc' | 'mjpeg'
 
@@ -301,8 +302,52 @@
     btn.querySelector(".ic").innerHTML = svg(muted ? "volumeOff" : "volume");
   }
 
-  // --- Микрофон оператора -------------------------------------------------
-  function micAudioTrack() { return micStream ? micStream.getAudioTracks()[0] : null; }
+  // --- Микрофон оператора → панель (native ISAPI two-way audio) -----------
+  // Захватываем микрофон, понижаем до 8 кГц, кодируем в G.711 µ-law и шлём
+  // байты по WebSocket в интеграцию, которая отдаёт их панели (ISAPI). go2rtc
+  // для микрофона не нужен.
+  const MULAW_BIAS = 0x84, MULAW_CLIP = 32635;
+  function muLawSample(sample) {
+    let sign = sample < 0 ? 0x80 : 0;
+    if (sign) sample = -sample;
+    if (sample > MULAW_CLIP) sample = MULAW_CLIP;
+    sample += MULAW_BIAS;
+    let exp = 7;
+    for (let mask = 0x4000; (sample & mask) === 0 && exp > 0; exp--, mask >>= 1) { /* find exponent */ }
+    const mantissa = (sample >> (exp + 3)) & 0x0F;
+    return (~(sign | (exp << 4) | mantissa)) & 0xFF;
+  }
+  function encodeMuLaw(f32) {
+    const out = new Uint8Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      let s = Math.max(-1, Math.min(1, f32[i])) * 32767;
+      out[i] = muLawSample(s | 0);
+    }
+    return out;
+  }
+  function downsampleTo8k(f32, inRate) {
+    if (inRate === 8000) return f32;
+    const ratio = inRate / 8000;
+    const outLen = Math.floor(f32.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const start = Math.floor(i * ratio), end = Math.floor((i + 1) * ratio);
+      let sum = 0, n = 0;
+      for (let j = start; j < end && j < f32.length; j++) { sum += f32[j]; n++; }
+      out[i] = n ? sum / n : 0;
+    }
+    return out;
+  }
+  function b64(u8) {
+    let s = "";
+    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s);
+  }
+  function sendTalkData(u8) {
+    const hass = getHass();
+    if (!hass || !activeId || !u8.length) return;
+    hass.connection.sendMessagePromise({ type: "bms_intercom/talk_data", entry_id: activeId, data: b64(u8) }).catch(() => {});
+  }
 
   function updateMicBtn() {
     const btn = overlay && overlay.querySelector(".bms-mic");
@@ -320,43 +365,58 @@
       }
       micOn = false; updateMicBtn(); return false;
     }
-    if (!audioSender) { micOn = false; updateMicBtn(); return false; }
-    if (!micStream) {
-      try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-      catch (e) { if (!silent) showToast("Доступ к микрофону отклонён в браузере."); micOn = false; updateMicBtn(); return false; }
-      try { await audioSender.replaceTrack(micAudioTrack()); } catch (e) { console.warn("replaceTrack(mic)", e); }
+    const hass = getHass();
+    if (!hass || !activeId) { micOn = false; updateMicBtn(); return false; }
+    if (micStream) { micOn = true; updateMicBtn(); return true; }
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (e) {
+      if (!silent) showToast("Доступ к микрофону отклонён в браузере.");
+      micOn = false; updateMicBtn(); return false;
     }
-    const track = micAudioTrack();
-    if (track) track.enabled = true;
-    micOn = !!track; updateMicBtn(); return micOn;
+    try { await hass.connection.sendMessagePromise({ type: "bms_intercom/talk_start", entry_id: activeId }); }
+    catch (e) { console.warn("BMS Intercom: talk_start", e); }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      micCtx = new AC();
+      if (micCtx.state === "suspended") { try { await micCtx.resume(); } catch (e) {} }
+      micSrc = micCtx.createMediaStreamSource(micStream);
+      micProc = micCtx.createScriptProcessor(4096, 1, 1);
+      micProc.onaudioprocess = (ev) => {
+        if (!micOn) return;
+        const ds = downsampleTo8k(ev.inputBuffer.getChannelData(0), micCtx.sampleRate);
+        sendTalkData(encodeMuLaw(ds));
+      };
+      const zero = micCtx.createGain();
+      zero.gain.value = 0;
+      micSrc.connect(micProc); micProc.connect(zero); zero.connect(micCtx.destination);
+    } catch (e) {
+      console.warn("BMS Intercom: аудио-конвейер микрофона", e);
+    }
+    micOn = true; updateMicBtn(); return true;
   }
 
   async function toggleMic() {
-    if (!micStream) { await startMic(); return; }
-    const track = micAudioTrack();
-    micOn = !micOn;
-    if (track) track.enabled = micOn;
+    if (micOn) stopMic(); else await startMic();
     updateMicBtn();
   }
 
   function stopMic() {
+    const wasActive = !!micStream;
+    if (micProc) { try { micProc.disconnect(); micProc.onaudioprocess = null; } catch (e) {} micProc = null; }
+    if (micSrc) { try { micSrc.disconnect(); } catch (e) {} micSrc = null; }
+    if (micCtx) { try { micCtx.close(); } catch (e) {} micCtx = null; }
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
-    if (audioSender) { try { audioSender.replaceTrack(null); } catch (e) {} }
+    if (wasActive) {
+      const hass = getHass();
+      if (hass && activeId) hass.connection.sendMessagePromise({ type: "bms_intercom/talk_stop", entry_id: activeId }).catch(() => {});
+    }
     micOn = false;
   }
 
-  // --- WebRTC -------------------------------------------------------------
-  function preferG711(transceiver) {
-    try {
-      const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities ? RTCRtpSender.getCapabilities("audio") : null;
-      if (caps && transceiver.setCodecPreferences) {
-        const g711 = (c) => /pcmu|pcma|g722/i.test(c.mimeType);
-        const pref = caps.codecs.filter(g711), rest = caps.codecs.filter((c) => !g711(c));
-        if (pref.length) transceiver.setCodecPreferences([...pref, ...rest]);
-      }
-    } catch (e) { /* ignore */ }
-  }
-
+  // --- WebRTC (только приём: видео + входящий звук панели) ----------------
   function sendCandidate(cam, candidate) {
     const hass = getHass();
     if (!hass) return;
@@ -404,9 +464,7 @@
 
     pc = new RTCPeerConnection({ iceServers });
     pc.addTransceiver("video", { direction: "recvonly" });
-    const at = pc.addTransceiver("audio", { direction: "sendrecv" });
-    audioSender = at.sender;
-    preferG711(at);
+    pc.addTransceiver("audio", { direction: "recvonly" }); // микрофон идёт через ISAPI, не сюда
 
     pc.ontrack = (ev) => {
       if (remoteStream && !remoteStream.getTracks().includes(ev.track)) remoteStream.addTrack(ev.track);
@@ -431,7 +489,7 @@
     wrToken++;
     if (wrUnsub) { try { const r = wrUnsub(); if (r && r.catch) r.catch(() => {}); } catch (e) {} wrUnsub = null; }
     if (pc) { try { pc.ontrack = null; pc.onicecandidate = null; pc.onconnectionstatechange = null; pc.close(); } catch (e) {} pc = null; }
-    audioSender = null; wrSession = null; wrCam = null; wrPending = [];
+    wrSession = null; wrCam = null; wrPending = [];
     if (remoteStream) { remoteStream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} }); remoteStream = null; }
     const v = videoElem();
     if (v) { v.srcObject = null; v.muted = true; }

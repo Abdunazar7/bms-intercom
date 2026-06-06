@@ -34,6 +34,8 @@ from .isapi import (
     STATUS_RINGING,
     ISAPIClient,
     ISAPIError,
+    TwoWayAudioError,
+    TwoWayAudioSession,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,6 +83,7 @@ class BMSIntercomDevice:
         self.available: bool = True
         self._client: ISAPIClient | None = None
         self._unsub_poll = None
+        self._talk: TwoWayAudioSession | None = None  # активная отправка микрофона
         self._backchannel_ready = False        # ISAPI-источник уже в go2rtc
         self._backchannel_warned = False       # чтобы не спамить, если go2rtc нет
         self._backchannel_unsupported = False  # go2rtc без isapi-модуля
@@ -135,6 +138,13 @@ class BMSIntercomDevice:
             self.hass, self._async_poll, timedelta(seconds=CALL_POLL_INTERVAL)
         )
 
+        # Авто-настройка панели: кодек two-way audio = G.711 (best-effort), чтобы
+        # микрофон браузера доходил без перекодирования.
+        try:
+            await self._client.async_ensure_twoway_codec()
+        except ISAPIError as err:
+            _LOGGER.debug("[%s] Не удалось задать кодек two-way audio: %s", self.name, err)
+
     async def async_get_snapshot(self) -> bytes | None:
         """Real mode: fetch a still JPEG from the panel (None if unavailable)."""
         if self._client is None:
@@ -147,6 +157,7 @@ class BMSIntercomDevice:
 
     async def async_shutdown(self) -> None:
         """Stop the poller and close the ISAPI client."""
+        await self.async_talk_stop()
         if self._unsub_poll is not None:
             self._unsub_poll()
             self._unsub_poll = None
@@ -210,10 +221,9 @@ class BMSIntercomDevice:
             self.call_state = new_state
             self._notify()
 
-        # While a call is active make sure go2rtc has the ISAPI backchannel,
-        # so the browser microphone can reach the panel (two-way audio).
-        if new_state in (STATE_RINGING, STATE_ANSWERED):
-            await self._async_ensure_backchannel()
+        # NB: микрофон теперь идёт напрямую через native ISAPI two-way audio
+        # (см. async_talk_*), поэтому обратный канал go2rtc больше не нужен и
+        # не вызывается, чтобы не открывать вторую two-way-сессию к панели.
 
     async def _async_ensure_backchannel(self) -> None:
         """Append the Hikvision ISAPI two-way-audio source to the camera's
@@ -331,6 +341,45 @@ class BMSIntercomDevice:
                         )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("[%s] go2rtc: ошибка PUT: %s", self.name, err)
+
+    # --- Two-way audio (microphone → panel via native ISAPI) ---------------
+    async def async_talk_start(self) -> None:
+        """Open the panel's two-way audio channel for the operator's mic."""
+        if self.is_demo:
+            return
+        host = self.entry.data.get(CONF_HOST)
+        if not host or self._talk is not None:
+            return
+        sess = TwoWayAudioSession(
+            host,
+            self.entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
+            self.entry.data.get(CONF_USERNAME, ""),
+            self.entry.data.get(CONF_PASSWORD, ""),
+        )
+        try:
+            await sess.async_open()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("[%s] Не удалось открыть микрофон к панели: %s", self.name, err)
+            await sess.async_close()
+            return
+        self._talk = sess
+        _LOGGER.debug("[%s] Микрофон к панели открыт (кодек %s)", self.name, sess.codec)
+
+    async def async_talk_send(self, data: bytes) -> None:
+        """Forward a chunk of G.711 mic audio to the panel."""
+        if self._talk is None:
+            return
+        try:
+            await self._talk.async_send(data)
+        except TwoWayAudioError as err:
+            _LOGGER.debug("[%s] Микрофон: поток оборвался (%s)", self.name, err)
+            await self.async_talk_stop()
+
+    async def async_talk_stop(self) -> None:
+        """Close the panel's two-way audio channel."""
+        sess, self._talk = self._talk, None
+        if sess is not None:
+            await sess.async_close()
 
     # --- Actions -----------------------------------------------------------
     async def async_set_view(self, on: bool) -> None:

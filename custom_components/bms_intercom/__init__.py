@@ -1,10 +1,15 @@
 """The BMS Intercom integration."""
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import logging
 import os
 
+import voluptuous as vol
+
+from homeassistant.components import websocket_api
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
@@ -18,8 +23,65 @@ _LOGGER = logging.getLogger(__name__)
 
 _PROXY_KEY = f"{DOMAIN}_https_proxy"
 _FRONTEND_FLAG = f"{DOMAIN}_frontend_registered"
+_WS_FLAG = f"{DOMAIN}_ws_registered"
 _STATIC_URL = f"/{DOMAIN}_static"
 _CARD_FILE = "bms_intercom_card.js"
+
+
+def _device_from_msg(hass: HomeAssistant, msg) -> BMSIntercomDevice | None:
+    return (hass.data.get(DOMAIN) or {}).get(msg.get("entry_id"))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/talk_start", vol.Required("entry_id"): str}
+)
+@websocket_api.async_response
+async def _ws_talk_start(hass, connection, msg) -> None:
+    device = _device_from_msg(hass, msg)
+    if device is not None:
+        await device.async_talk_start()
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/talk_data",
+        vol.Required("entry_id"): str,
+        vol.Required("data"): str,  # base64 raw G.711
+    }
+)
+@websocket_api.async_response
+async def _ws_talk_data(hass, connection, msg) -> None:
+    device = _device_from_msg(hass, msg)
+    if device is not None:
+        try:
+            chunk = base64.b64decode(msg["data"])
+        except (binascii.Error, ValueError):
+            chunk = b""
+        if chunk:
+            await device.async_talk_send(chunk)
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/talk_stop", vol.Required("entry_id"): str}
+)
+@websocket_api.async_response
+async def _ws_talk_stop(hass, connection, msg) -> None:
+    device = _device_from_msg(hass, msg)
+    if device is not None:
+        await device.async_talk_stop()
+    connection.send_result(msg["id"])
+
+
+def _async_register_ws(hass: HomeAssistant) -> None:
+    """Register the mic-streaming WebSocket commands once per HA run."""
+    if hass.data.get(_WS_FLAG):
+        return
+    hass.data[_WS_FLAG] = True
+    websocket_api.async_register_command(hass, _ws_talk_start)
+    websocket_api.async_register_command(hass, _ws_talk_data)
+    websocket_api.async_register_command(hass, _ws_talk_stop)
 
 
 def _card_version() -> str:
@@ -65,6 +127,7 @@ async def _async_start_proxy(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BMS Intercom from a config entry."""
     await _async_register_frontend(hass)
+    _async_register_ws(hass)
     await _async_start_proxy(hass, entry)
 
     device = BMSIntercomDevice(hass, entry)
