@@ -155,7 +155,7 @@
 
     audio = document.createElement("audio");
     audio.loop = true;
-    audio.src = `${STATIC}/ring.mp3`;
+    audio.src = `${STATIC}/ring1.mp3`;
     overlay.appendChild(audio);
 
     overlay.querySelector(".bms-answer").addEventListener("click", () => callRole("answer"));
