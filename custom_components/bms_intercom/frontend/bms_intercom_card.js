@@ -39,6 +39,7 @@
   let micStream = null; // активный поток микрофона оператора (если разрешён)
   let lastSig = null;  // подпись текущего состояния, чтобы не перерисовывать зря
   let ringingNow = false; // звонит ли сейчас (для подсказки про звук)
+  let autoEndTimer = null; // авто-завершение вызова после открытия двери
 
   // --- Состояние WebRTC (видео + входящий звук + микрофон) ----------------
   let pc = null;             // RTCPeerConnection
@@ -188,7 +189,18 @@
       // Как телефон: ответили → слышим панель и сразу говорим (микрофон вкл).
       setMuted(false);   // звук панели (его выключить нельзя — всегда вкл)
       startMic(true);    // микрофон оператора включён по умолчанию (тихо)
+    } else if (role === "open_door") {
+      // Открыли дверь — авто-завершаем вызов через 5 секунд.
+      clearAutoEnd();
+      showToast("Дверь открыта. Вызов завершится через 5 секунд.");
+      autoEndTimer = setTimeout(() => { autoEndTimer = null; callRole("reject"); }, 5000);
+    } else if (role === "reject") {
+      clearAutoEnd();
     }
+  }
+
+  function clearAutoEnd() {
+    if (autoEndTimer) { clearTimeout(autoEndTimer); autoEndTimer = null; }
   }
 
   function showToast(msg, link) {
@@ -533,13 +545,13 @@
     if (!overlay) return;
     overlay.classList.remove("show");
     audio.pause();
+    clearAutoEnd();
     stopMic();
     stopWebrtc();
     const img = overlay.querySelector("img.bms-video-img");
     if (img) { img.src = ""; img.dataset.src = ""; }
     videoMode = null;
-    const micBtn = overlay.querySelector(".bms-mic");
-    if (micBtn) { micBtn.classList.remove("on"); micBtn.querySelector(".ic").textContent = "🎙️"; }
+    updateMicBtn();
     updateSoundHint();
     activeId = null;
     lastSig = null;
