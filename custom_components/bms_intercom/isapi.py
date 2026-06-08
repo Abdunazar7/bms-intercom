@@ -150,10 +150,10 @@ class TwoWayAudioSession:
                 h += f"Authorization: {auth}\r\n"
             return (h + body_head).encode()
 
-        reader, writer = await asyncio.open_connection(host, port)
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 10)
         writer.write(request(None))
         await writer.drain()
-        status, headers = await _read_http_head(reader)
+        status, headers = await asyncio.wait_for(_read_http_head(reader), 10)
 
         if status == 401:
             chal = _parse_digest_challenge(headers.get("www-authenticate", ""))
@@ -162,10 +162,10 @@ class TwoWayAudioSession:
                 writer.close()
             except Exception:  # noqa: BLE001
                 pass
-            reader, writer = await asyncio.open_connection(host, port)
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 10)
             writer.write(request(auth))
             await writer.drain()
-            status, headers = await _read_http_head(reader)
+            status, headers = await asyncio.wait_for(_read_http_head(reader), 10)
 
         if status != 200:
             try:
@@ -182,7 +182,7 @@ class TwoWayAudioSession:
         async with self._lock:
             try:
                 self._writer.write(data)
-                await self._writer.drain()
+                await asyncio.wait_for(self._writer.drain(), 5)
             except Exception as err:  # noqa: BLE001
                 raise TwoWayAudioError(str(err)) from err
 

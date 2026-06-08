@@ -24,7 +24,6 @@ from .const import (
     DEFAULT_HTTP_PORT,
     DEFAULT_NAME,
     DEFAULT_RTSP_PORT,
-    DOMAIN,
     MODE_DEMO,
     RTSP_STREAM_PATH,
     SIGNAL_STATE_UPDATED,
@@ -86,10 +85,6 @@ class BMSIntercomDevice:
         self._talk: TwoWayAudioSession | None = None  # активная отправка микрофона
         self._talk_bytes = 0
         self._talk_logged_at = 0
-        self._backchannel_ready = False        # ISAPI-источник уже в go2rtc
-        self._backchannel_warned = False       # чтобы не спамить, если go2rtc нет
-        self._backchannel_unsupported = False  # go2rtc без isapi-модуля
-        self._go2rtc_probed = False            # версию go2rtc уже залогировали
         self._answered = False                 # оператор ответил (латч разговора)
         self._answered_at = 0.0                # время ответа (для тайм-аута)
         self._ringing_at = 0.0                 # время начала звонка (окно звонка)
@@ -197,7 +192,6 @@ class BMSIntercomDevice:
         # хотя звук/видео идут через go2rtc). Выход — «Сбросить» или тайм-аут.
         if self._answered:
             if self.hass.loop.time() - self._answered_at <= MAX_TALK_SECONDS:
-                await self._async_ensure_backchannel()
                 return
             _LOGGER.debug("[%s] Разговор завершён по тайм-ауту", self.name)
             self._answered = False
@@ -215,7 +209,6 @@ class BMSIntercomDevice:
             and new_state == STATE_IDLE
             and self.hass.loop.time() - self._ringing_at <= RING_WINDOW_SECONDS
         ):
-            await self._async_ensure_backchannel()
             return  # держим RINGING ещё немного, чтобы можно было ответить
 
         if new_state != self.call_state:
@@ -227,131 +220,17 @@ class BMSIntercomDevice:
         # (см. async_talk_*), поэтому обратный канал go2rtc больше не нужен и
         # не вызывается, чтобы не открывать вторую two-way-сессию к панели.
 
-    async def _async_ensure_backchannel(self) -> None:
-        """Append the Hikvision ISAPI two-way-audio source to the camera's
-        go2rtc stream.
-
-        Hikvision door stations don't do a reliable RTSP backchannel — go2rtc
-        needs a separate `isapi://user:pass@host:port/` source. Home Assistant's
-        go2rtc integration only registers the RTSP video source, so we add the
-        ISAPI one ourselves via go2rtc's REST API. Idempotent: skips streams
-        that already have it. Re-runs each poll so it survives go2rtc/HA
-        re-registering the stream.
-        """
-        if self._backchannel_unsupported:
-            return  # этот go2rtc не умеет isapi-источник — больше не пытаемся
-        cfg = self.hass.data.get("go2rtc")
-        if cfg is None:
-            if not self._backchannel_warned:
-                self._backchannel_warned = True
-                _LOGGER.warning(
-                    "[%s] go2rtc HA не найден (hass.data['go2rtc']). Двусторонний "
-                    "звук требует встроенного go2rtc Home Assistant.", self.name,
-                )
-            return
-        base = getattr(cfg, "url", None)
-        session = getattr(cfg, "session", None)
-        host = self.entry.data.get(CONF_HOST)
-        if not base or session is None or not host:
-            return
-
-        # Один раз залогируем версию и адрес go2rtc (для диагностики).
-        if not self._go2rtc_probed:
-            self._go2rtc_probed = True
-            try:
-                async with session.get(f"{base}/api") as resp:
-                    info = await resp.json()
-                _LOGGER.debug(
-                    "[%s] go2rtc: версия %s, url=%s", self.name, info.get("version"), base
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("[%s] go2rtc /api недоступен (%s), url=%s", self.name, err, base)
-
-        user = quote(self.entry.data.get(CONF_USERNAME, ""), safe="")
-        pwd = quote(self.entry.data.get(CONF_PASSWORD, ""), safe="")
-        http_port = self.entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
-        isapi_src = f"isapi://{user}:{pwd}@{host}:{http_port}/"
-
-        # Имя потока, под которым HA зарегистрировал нашу камеру в go2rtc
-        # (обычно совпадает с entity_id камеры).
-        from homeassistant.helpers import entity_registry as er
-
-        cam_eid = er.async_get(self.hass).async_get_entity_id(
-            "camera", DOMAIN, f"{self.entry.entry_id}_camera"
-        )
-
-        try:
-            async with session.get(f"{base}/api/streams") as resp:
-                streams = await resp.json()
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("[%s] go2rtc: список потоков недоступен: %s", self.name, err)
-            return
-
-        names = list((streams or {}).keys())
-        # Какие потоки go2rtc принадлежат нашей камере: сперва точное имя
-        # (entity_id), иначе все, где встречается хост панели.
-        if cam_eid and cam_eid in (streams or {}):
-            targets = [cam_eid]
-        else:
-            targets = [n for n, info in (streams or {}).items() if host in str(info)]
-
-        if not targets:
-            _LOGGER.debug(
-                "[%s] go2rtc: поток камеры ещё не создан (ищу '%s'/host %s среди %s)",
-                self.name, cam_eid, host, names,
-            )
-            return
-
-        rtsp = self.rtsp_url
-        for name in targets:
-            if "isapi://" in str(streams.get(name)):
-                if not self._backchannel_ready:
-                    self._backchannel_ready = True
-                    _LOGGER.debug("[%s] go2rtc: обратный канал ISAPI на месте ('%s')", self.name, name)
-                continue
-            # PUT задаёт ИМЕННО этот набор источников (заменяет). Поэтому шлём
-            # rtsp ПЕРВЫМ и isapi вторым: видео сохраняется, добавляется
-            # обратный звук. На старых go2rtc читается только первый src —
-            # тогда останется только rtsp (видео цело, talk-back просто не
-            # появится), сломать видео это не может.
-            params = [("name", name), ("src", rtsp), ("src", isapi_src)]
-            try:
-                async with session.put(f"{base}/api/streams", params=params) as resp:
-                    if resp.status < 300:
-                        self._backchannel_ready = True
-                        _LOGGER.info(
-                            "[%s] go2rtc: добавлен обратный аудиоканал ISAPI к потоку '%s'",
-                            self.name, name,
-                        )
-                    else:
-                        body = await resp.text()
-                        if resp.status == 400 and "not supported" in body.lower():
-                            # В этом go2rtc нет isapi-модуля → двусторонний звук
-                            # через go2rtc невозможен. Сообщаем один раз и больше
-                            # не дёргаем API.
-                            self._backchannel_unsupported = True
-                            _LOGGER.warning(
-                                "[%s] go2rtc не поддерживает источник isapi:// "
-                                "(%s). Двусторонний звук через go2rtc недоступен "
-                                "на этой сборке go2rtc. Видео и входящий звук "
-                                "работают.", self.name, body.strip()[:120],
-                            )
-                            return
-                        _LOGGER.warning(
-                            "[%s] go2rtc: PUT '%s' вернул HTTP %s: %s",
-                            self.name, name, resp.status, body[:200],
-                        )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("[%s] go2rtc: ошибка PUT: %s", self.name, err)
-
     # --- Two-way audio (microphone → panel via native ISAPI) ---------------
     async def async_talk_start(self) -> None:
         """Open the panel's two-way audio channel for the operator's mic."""
         if self.is_demo:
             return
         host = self.entry.data.get(CONF_HOST)
-        if not host or self._talk is not None:
+        if not host:
             return
+        # Закроем прошлую сессию (например, если вкладку закрыли без talk_stop) —
+        # так не оставим висящий two-way-сокет к панели.
+        await self.async_talk_stop()
         sess = TwoWayAudioSession(
             host,
             self.entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
@@ -367,7 +246,7 @@ class BMSIntercomDevice:
         self._talk = sess
         self._talk_bytes = 0
         self._talk_logged_at = 0
-        _LOGGER.info("[%s] Микрофон к панели открыт (кодек %s)", self.name, sess.codec)
+        _LOGGER.debug("[%s] Микрофон к панели открыт (кодек %s)", self.name, sess.codec)
 
     async def async_talk_send(self, data: bytes) -> None:
         """Forward a chunk of G.711 mic audio to the panel."""
@@ -379,11 +258,11 @@ class BMSIntercomDevice:
             _LOGGER.warning("[%s] Микрофон: поток к панели оборвался (%s)", self.name, err)
             await self.async_talk_stop()
             return
-        # Раз в ~2 секунды отметим, что звук реально уходит на панель.
+        # Раз в ~2 секунды отметим в debug, что звук реально уходит на панель.
         self._talk_bytes += len(data)
         if self._talk_bytes - self._talk_logged_at >= 16000:
             self._talk_logged_at = self._talk_bytes
-            _LOGGER.info("[%s] Микрофон → панель: отправлено %d Б", self.name, self._talk_bytes)
+            _LOGGER.debug("[%s] Микрофон → панель: отправлено %d Б", self.name, self._talk_bytes)
 
     async def async_talk_stop(self) -> None:
         """Close the panel's two-way audio channel."""

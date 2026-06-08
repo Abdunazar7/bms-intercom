@@ -129,6 +129,10 @@
           background: linear-gradient(0deg, rgba(6,8,14,.9) 0%, rgba(6,8,14,0) 100%);
           display: flex; justify-content: center; }
         .bms-actions { display: flex; gap: 28px; align-items: flex-start; }
+        #bms-intercom-overlay button, #bms-intercom-overlay .bms-video,
+        #bms-intercom-overlay .bms-sound-hint {
+          outline: none; -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; }
+        #bms-intercom-overlay button:focus, #bms-intercom-overlay button:focus-visible { outline: none; }
         .bms-btn { border: none; background: none; cursor: pointer; color: #eef2f8; display: flex;
           flex-direction: column; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
         .bms-btn .ic { width: 58px; height: 58px; border-radius: 50%; background: #3a4254; display: flex;

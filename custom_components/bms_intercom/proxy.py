@@ -34,6 +34,15 @@ _HOP = {
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
 }
 
+# Forwarding headers a client must NOT be able to set themselves — otherwise,
+# since Home Assistant trusts this proxy (127.0.0.1), a request could spoof its
+# source IP. We strip any incoming ones and set them ourselves from the real
+# TCP peer.
+_FORWARD_STRIP = {
+    "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "forwarded",
+    "x-real-ip",
+}
+
 
 def _build_cert(cert_path: str, key_path: str, hostnames: list[str], ips: list[str]) -> None:
     """Generate a long-lived self-signed cert with SAN, if not present yet."""
@@ -77,6 +86,11 @@ def _build_cert(cert_path: str, key_path: str, hostnames: list[str], ips: list[s
             serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
         ))
+    # Private key — readable only by the owner (best-effort; no-op on Windows).
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
     with open(cert_path, "wb") as fh:
         fh.write(cert.public_bytes(serialization.Encoding.PEM))
     _LOGGER.info("BMS Intercom: создан самоподписанный сертификат (%s)", cert_path)
@@ -156,8 +170,15 @@ class HTTPSProxy:
         # CIMultiDict + add() preserves duplicate headers (e.g. multiple Set-Cookie).
         headers: CIMultiDict[str] = CIMultiDict()
         for k, v in request.headers.items():
-            if k.lower() not in _HOP and k.lower() != "host":
-                headers.add(k, v)
+            kl = k.lower()
+            if kl in _HOP or kl == "host" or kl in _FORWARD_STRIP:
+                continue
+            headers.add(k, v)
+        # Set trustworthy forwarding headers from the real peer (anti-spoof).
+        headers["X-Forwarded-For"] = request.remote or "127.0.0.1"
+        headers["X-Forwarded-Proto"] = "https"
+        if request.host:
+            headers["X-Forwarded-Host"] = request.host
         try:
             backend = await self._session.request(
                 request.method, url, headers=headers,
