@@ -215,13 +215,17 @@ class HTTPSProxy:
             return server_ws
 
         async def pump(src, dst) -> None:
-            async for msg in src:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    await dst.send_str(msg.data)
-                elif msg.type == aiohttp.WSMsgType.BINARY:
-                    await dst.send_bytes(msg.data)
-                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
-                    break
+            try:
+                async for msg in src:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        await dst.send_str(msg.data)
+                    elif msg.type == aiohttp.WSMsgType.BINARY:
+                        await dst.send_bytes(msg.data)
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
+                        break
+            except (aiohttp.ClientError, ConnectionResetError, RuntimeError):
+                # Другая сторона уже закрывается — при разрыве это нормально.
+                pass
 
         tasks = [
             asyncio.create_task(pump(client_ws, server_ws)),
@@ -233,6 +237,9 @@ class HTTPSProxy:
             _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
+            # Заберём результаты/исключения отменённых задач, иначе HA
+            # залогирует «Task exception was never retrieved».
+            await asyncio.gather(*pending, return_exceptions=True)
         except (asyncio.CancelledError, aiohttp.ClientError, ConnectionResetError):
             pass
         finally:
