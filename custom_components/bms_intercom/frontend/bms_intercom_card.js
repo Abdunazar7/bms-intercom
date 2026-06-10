@@ -191,9 +191,13 @@
     document.body.appendChild(overlay);
     card = overlay.querySelector(".bms-card");
 
+    // ВАЖНО: src НЕ ставим здесь. Иначе киоск-браузеры (Fully Kiosk и т.п.) с
+    // включённым автозапуском проигрывают рингтон сами при загрузке страницы /
+    // включении экрана — без всякого вызова. Источник появляется только на
+    // время звонка (playRing) и убирается после (stopRing).
     audio = document.createElement("audio");
     audio.loop = true;
-    audio.src = `${STATIC}/ring1.mp3`;
+    audio.preload = "none";
     overlay.appendChild(audio);
 
     overlay.querySelector(".bms-answer").addEventListener("click", () => callRole("answer"));
@@ -564,15 +568,33 @@
     if (st) showVideo(hass, cam, st, mode);
 
     overlay.classList.add("show");
-    if (mode === "ringing") audio.play().catch(() => {}); else audio.pause();
+    if (mode === "ringing") playRing(); else stopRing();
     updateClock();
     activeId = id;
+  }
+
+  // Рингтон звучит только во время звонка. Источник ставится прямо перед
+  // воспроизведением и снимается после — чтобы киоск-браузер не мог проиграть
+  // его сам при загрузке/включении экрана.
+  function playRing() {
+    if (!audio) return;
+    if (!audio.getAttribute("src")) audio.src = `${STATIC}/ring1.mp3`;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  }
+  function stopRing() {
+    if (!audio) return;
+    try {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load(); // полностью выгружаем источник
+    } catch (e) { /* ignore */ }
   }
 
   function hide() {
     if (!overlay) return;
     overlay.classList.remove("show");
-    audio.pause();
+    stopRing();
     clearAutoEnd();
     stopMic();
     stopWebrtc();
