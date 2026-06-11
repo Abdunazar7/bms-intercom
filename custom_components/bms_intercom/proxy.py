@@ -43,6 +43,16 @@ _FORWARD_STRIP = {
     "x-real-ip",
 }
 
+# On a WebSocket upgrade aiohttp builds the handshake itself — don't forward the
+# client's handshake headers, hop-by-hop headers or untrusted forward headers.
+# Everything else (cookies etc.) IS forwarded so add-on Ingress (Music Assistant
+# и т.п.) проходит авторизацию.
+_WS_SKIP = _HOP | _FORWARD_STRIP | {
+    "host", "upgrade", "connection", "content-length",
+    "sec-websocket-key", "sec-websocket-version",
+    "sec-websocket-extensions", "sec-websocket-protocol",
+}
+
 
 def _build_cert(cert_path: str, key_path: str, hostnames: list[str], ips: list[str]) -> None:
     """Generate a long-lived self-signed cert with SAN, if not present yet."""
@@ -204,11 +214,28 @@ class HTTPSProxy:
 
     async def _ws(self, request: web.Request) -> web.StreamResponse:
         assert self._session is not None
-        server_ws = web.WebSocketResponse(protocols=request.headers.get("Sec-WebSocket-Protocol", "").split(",") if request.headers.get("Sec-WebSocket-Protocol") else ())
+        raw_proto = request.headers.get("Sec-WebSocket-Protocol", "")
+        protocols = tuple(p.strip() for p in raw_proto.split(",") if p.strip())
+        server_ws = web.WebSocketResponse(protocols=protocols)
         await server_ws.prepare(request)
         url = _WS_BACKEND + request.rel_url.raw_path_qs
+
+        # Forward cookies/headers to the backend WS and set the SAME forwarding
+        # headers as for plain HTTP. Иначе IP в WS отличается от IP в HTTP, и
+        # сессия Home Assistant Ingress (Music Assistant и пр.) не проходит.
+        ws_headers: CIMultiDict[str] = CIMultiDict()
+        for k, v in request.headers.items():
+            if k.lower() not in _WS_SKIP:
+                ws_headers.add(k, v)
+        ws_headers["X-Forwarded-For"] = request.remote or "127.0.0.1"
+        ws_headers["X-Forwarded-Proto"] = "https"
+        if request.host:
+            ws_headers["X-Forwarded-Host"] = request.host
+
         try:
-            client_ws = await self._session.ws_connect(url, heartbeat=30)
+            client_ws = await self._session.ws_connect(
+                url, heartbeat=30, headers=ws_headers, protocols=protocols
+            )
         except aiohttp.ClientError as err:
             _LOGGER.debug("BMS Intercom: ws backend error: %s", err)
             await server_ws.close()
