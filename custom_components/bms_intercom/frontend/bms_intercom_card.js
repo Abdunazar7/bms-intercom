@@ -16,6 +16,19 @@
   "use strict";
 
   const STATIC = "/bms_intercom_static";
+  // Resolve this module's own static assets (ringtone, camera-proxy snapshot)
+  // against WHERE THE MODULE ITSELF WAS LOADED FROM — always Home Assistant.
+  // In the HA frontend the module is same-origin, so a relative path already
+  // works (currentScript is null for an ES module → SELF_ORIGIN stays ""). In the
+  // Android 3D kiosk the page is file:// but the module is injected from HA, so
+  // currentScript.src gives HA's origin and the ringtone/snapshot load from HA
+  // instead of resolving to a broken file:/// URL.
+  let SELF_ORIGIN = "";
+  try {
+    const _src = (document.currentScript && document.currentScript.src) || "";
+    if (_src) SELF_ORIGIN = new URL(_src).origin;
+  } catch (e) { /* keep relative */ }
+  const assetUrl = (path) => SELF_ORIGIN + path;
   const POLL_MS = 400;
   const FEATURE_STREAM = 2; // CameraEntityFeature.STREAM
   const AUTO_END_RING_MS = 5000;  // «Открыть» во время звонка (без ответа) → 5с
@@ -529,7 +542,7 @@
       vid.classList.add("bms-hidden");
       img.classList.remove("bms-hidden");
       const token = st.attributes.access_token;
-      const url = `/api/camera_proxy_stream/${cam}?token=${token}`;
+      const url = assetUrl(`/api/camera_proxy_stream/${cam}?token=${token}`);
       if (img.dataset.src !== url) { img.dataset.src = url; img.src = url; }
     }
   }
@@ -578,7 +591,7 @@
   // его сам при загрузке/включении экрана.
   function playRing() {
     if (!audio) return;
-    if (!audio.getAttribute("src")) audio.src = `${STATIC}/ring1.mp3`;
+    if (!audio.getAttribute("src")) audio.src = assetUrl(`${STATIC}/ring1.mp3`);
     audio.currentTime = 0;
     audio.play().catch(() => {});
   }
